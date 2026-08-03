@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(path_planning
     src/grid.cpp
     src/astar.cpp
+    src/dstar_lite.cpp
 )
 
 target_include_directories(path_planning
@@ -32,12 +33,28 @@ add_executable(astar_test
     src/main.cpp
 )
 
-target_link_libraries(astar_test
+add_executable(dstar_state_test
+    src/dstar_state_test.cpp
+)
+
+target_link_libraries( astar_test
+    PRIVATE
+        path_planning
+)
+
+target_link_libraries( dstar_state_test
     PRIVATE
         path_planning
 )
 
 target_compile_options(astar_test
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+target_compile_options(dstar_state_test
     PRIVATE
         -Wall
         -Wextra
@@ -52,6 +69,11 @@ if(BUILD_TESTING)
         NAME astar_tests
         COMMAND astar_test
     )
+
+    add_test(
+        NAME dstar_state_tests
+        COMMAND dstar_state_test
+    )
 endif()
 
 # Install headers.
@@ -65,6 +87,7 @@ install(
     TARGETS
         path_planning
         astar_test
+        dstar_state_test
     EXPORT export_path_planning
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib

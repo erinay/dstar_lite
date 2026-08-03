@@ -1,5 +1,3 @@
-#pragma once
-
 #include "grid.hpp"
 
 #include <optional>
