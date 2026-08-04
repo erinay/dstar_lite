@@ -190,7 +190,7 @@ int main() {
             PriorityKey{6.0, 2.0}
         }
     );
-    
+
     const Coord expected_first{3, 0};
     const Coord expected_second{2, 0};
     const Coord expected_third{1, 0};
@@ -208,6 +208,45 @@ int main() {
 
     std::cout
         << "\nAll Phase 4 and Phase 5 tests passed.\n";
+
+
+        // ============================================================
+    // Phase 6: Edge-cost function tests
+    // ============================================================
+
+    const Coord source{4, 4};
+    const Coord free_cell{5, 4};
+    const Coord unknown_cell{4, 5};
+    const Coord occupied_cell{3, 4};
+
+    grid.setState(source, 0);
+    grid.setState(free_cell, 0);
+
+    // Leave unknown_cell unchanged because cells initialize to -1.
+    grid.setState(occupied_cell, 1);
+
+    // Free -> free should cost 1.
+    assert(
+        std::abs(
+            planner.cost(source, free_cell) - 1.0
+        ) <= EPS
+    );
+
+    // Free -> unknown should cost 1.
+    assert(
+        std::abs(
+            planner.cost(source, unknown_cell) - 1.0
+        ) <= EPS
+    );
+
+    // Free -> occupied should be impossible.
+    assert(
+        std::isinf(
+            planner.cost(source, occupied_cell)
+        )
+    );
+
+    std::cout << "Phase 6 edge-cost tests passed.\n";
 
     return 0;
 }

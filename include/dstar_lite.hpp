@@ -72,6 +72,14 @@ public:
 
     double km() const;
 
+    // COST FUNCTION
+    double cost(const Coord& from, const Coord& to) const;
+
+    // update Vertext
+    void updateVertex(const Coord& s);
+
+    void computeShortestPath();
+
     // Temporary queue accessors for Phase 4 testing.
     bool openEmpty() const;
     std::size_t openSize() const;

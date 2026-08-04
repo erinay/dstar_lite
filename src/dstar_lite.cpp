@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <iostream>
 
 
 bool QueueEntryCompare::operator()(const QueueEntry& left, const QueueEntry& right) const{
@@ -73,6 +74,18 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
 
     }
 
+    double DStarLite::cost(const Coord& from, const Coord& to) const{
+        if (!grid_.inBounds(from) || !grid_.inBounds(to)) {
+            return INF;
+        }
+        if (heuristic(from, to) != 1.0) {
+            return INF;
+        }
+
+        return grid_.traversalCost(to); //traversal cost returns INF if occupied, 1 otherwise
+    }
+
+
     PriorityKey DStarLite::calculateKey(const Coord &s) const{
         const NodeData& node = data(s);
         const double min_cost = std::min(node.g, node.rhs);
@@ -80,6 +93,48 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
         const double k2 = min_cost;
         
         return PriorityKey{k1, k2};
+    }
+
+    bool approximatelyEqual(double a, double b) {
+        if (a == b) {
+            return true;
+        }
+        return std::abs(a - b) <= EPS;
+    }
+
+    void DStarLite::updateVertex(const Coord& s) {
+        // Goal: recompute rhs() from neighbors, checkes if cell is inconsistent, if inconsistent, inserts new queue entry with current key
+        NodeData& node = nodes_.at(s);
+        
+        //  checks if g, rhs is consistent or not, removal will be done later
+        if (!(s==goal_)) {
+            double best_rhs=INF;
+            
+            for (const Coord& successor: grid_.neighbors(s)){
+                const double candidate = cost(s, successor)+ g(successor);
+                best_rhs = std::min(best_rhs, candidate);
+            }
+            
+            node.rhs = best_rhs;
+        }
+
+        if(!approximatelyEqual(node.g, node.rhs)){
+            open_.push(QueueEntry{s, calculateKey(s)});
+        }
+
+    }
+
+    void DStarLite::computeShortestPath(){
+        // push out lowest inconsistent cell (ignore if equal) that's less than key to start position
+        constexpr std::size_t MAX_ITER = 1'000'000;
+        constexpr bool DEBUG=false; //adding max iteraion guard until this code is good to go
+
+        std::size_t iters = 0;
+
+        const PriorityKey start_key = calculateKey(start_);
+
+        while(true){
+        }
     }
 
     // Check if queue is empty
