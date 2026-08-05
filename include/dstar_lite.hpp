@@ -80,6 +80,10 @@ public:
 
     void computeShortestPath();
 
+    std::vector<Coord> extractPath() const;
+
+    void updateCellState(const Coord& cell, int new_state);
+
     // Temporary queue accessors for Phase 4 testing.
     bool openEmpty() const;
     std::size_t openSize() const;

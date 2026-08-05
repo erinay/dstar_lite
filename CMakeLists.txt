@@ -37,12 +37,21 @@ add_executable(dstar_state_test
     src/dstar_state_test.cpp
 )
 
+add_executable(dstar_astar_test
+    src/dstar_astar_test.cpp
+)
+
 target_link_libraries( astar_test
     PRIVATE
         path_planning
 )
 
 target_link_libraries( dstar_state_test
+    PRIVATE
+        path_planning
+)
+
+target_link_libraries( dstar_astar_test
     PRIVATE
         path_planning
 )
@@ -55,6 +64,14 @@ target_compile_options(astar_test
 )
 
 target_compile_options(dstar_state_test
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+
+target_compile_options(dstar_astar_test
     PRIVATE
         -Wall
         -Wextra
@@ -74,6 +91,12 @@ if(BUILD_TESTING)
         NAME dstar_state_tests
         COMMAND dstar_state_test
     )
+
+    add_test(
+        NAME dstar_astar_tests
+        COMMAND dstar_astar_test
+    )
+    
 endif()
 
 # Install headers.
@@ -88,6 +111,7 @@ install(
         path_planning
         astar_test
         dstar_state_test
+        dstar_astar_test
     EXPORT export_path_planning
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib

@@ -248,5 +248,319 @@ int main() {
 
     std::cout << "Phase 6 edge-cost tests passed.\n";
 
+    // ============================================================
+    // Phase 8: computeShortestPath
+    // ============================================================
+
+    Grid shortest_path_grid(10, 10, 0.1);
+
+    const Coord shortest_path_start{0, 0};
+    const Coord shortest_path_goal{9, 9};
+
+    DStarLite shortest_path_planner(
+        shortest_path_grid,
+        shortest_path_start,
+        shortest_path_goal
+    );
+
+    shortest_path_planner.computeShortestPath();
+
+    // The goal's cost to itself is zero.
+    assert(
+        std::abs(
+            shortest_path_planner.g(shortest_path_goal)
+        ) <= EPS
+    );
+
+    // The Manhattan distance from (0,0) to (9,9) is 18.
+    assert(
+        std::abs(
+            shortest_path_planner.g(shortest_path_start) -
+            18.0
+        ) <= EPS
+    );
+
+    // The start should be consistent after planning.
+    assert(
+        std::abs(
+            shortest_path_planner.g(shortest_path_start) -
+            shortest_path_planner.rhs(shortest_path_start)
+        ) <= EPS
+    );
+
+    std::cout
+        << "Phase 8 computeShortestPath test passed.\n";
+
+    std::cout
+        << "Start cost: "
+        << shortest_path_planner.g(shortest_path_start)
+        << '\n';
+
+    // ============================================================
+    // Phase 9: Extract the path from computed g-values
+    // ============================================================
+
+    // ------------------------------------------------------------
+    // Test 1: Empty 10 x 10 grid
+    // ------------------------------------------------------------
+    {
+        Grid grid(10, 10, 0.1);
+
+        const Coord start{0, 0};
+        const Coord goal{9, 9};
+
+        DStarLite planner(grid, start, goal);
+
+        planner.computeShortestPath();
+
+        const std::vector<Coord> path =
+            planner.extractPath();
+
+        // A path should exist.
+        assert(!path.empty());
+
+        // The returned path includes both endpoints.
+        assert(path.front() == start);
+        assert(path.back() == goal);
+
+        /*
+        * Manhattan distance:
+        *
+        * 9 horizontal moves + 9 vertical moves = 18 moves
+        *
+        * A path with 18 moves contains 19 cells.
+        */
+        assert(path.size() == 19);
+
+        double path_cost = 0.0;
+
+        for (
+            std::size_t i = 1;
+            i < path.size();
+            ++i
+        ) {
+            const Coord& from = path[i - 1];
+            const Coord& to = path[i];
+
+            // Consecutive cells must be valid neighbors.
+            const double edge_cost =
+                planner.cost(from, to);
+
+            assert(std::isfinite(edge_cost));
+            assert(
+                std::abs(edge_cost - 1.0) <= EPS
+            );
+
+            path_cost += edge_cost;
+        }
+
+        assert(
+            std::abs(path_cost - 18.0) <= EPS
+        );
+
+        // Since you use the non-optimized stopping condition,
+        // the start should be consistent after planning.
+        assert(
+            std::abs(planner.g(start) - 18.0) <= EPS
+        );
+
+        assert(
+            std::abs(planner.rhs(start) - 18.0) <= EPS
+        );
+
+        std::cout
+            << "Phase 9 Test 1 passed: "
+            << "empty-grid path extraction.\n";
+
+        std::cout
+            << "Path cost: "
+            << path_cost
+            << '\n';
+
+        grid.print(start, goal, path);
+    }
+
+    // ------------------------------------------------------------
+    // Test 2: Wall with one opening
+    // ------------------------------------------------------------
+    {
+        Grid grid(10, 10, 0.1);
+
+        const Coord start{1, 1};
+        const Coord goal{8, 1};
+
+        /*
+        * Create a vertical wall at x = 4.
+        *
+        * Leave one opening at (4, 7).
+        */
+        for (int y = 0; y < grid.height(); ++y) {
+            if (y == 7) {
+                continue;
+            }
+
+            const Coord wall_cell{4, y};
+            grid.setState(wall_cell, 1);
+        }
+
+        DStarLite planner(grid, start, goal);
+
+        planner.computeShortestPath();
+
+        const std::vector<Coord> path =
+            planner.extractPath();
+
+        assert(!path.empty());
+        assert(path.front() == start);
+        assert(path.back() == goal);
+
+        double path_cost = 0.0;
+        bool passed_through_opening = false;
+
+        const Coord opening{4, 7};
+
+        for (
+            std::size_t i = 0;
+            i < path.size();
+            ++i
+        ) {
+            const Coord& cell = path[i];
+
+            assert(grid.inBounds(cell));
+
+            // No occupied cell may appear in the path.
+            assert(grid.state(cell) != 1);
+
+            if (cell == opening) {
+                passed_through_opening = true;
+            }
+
+            if (i == 0) {
+                continue;
+            }
+
+            const Coord& previous = path[i - 1];
+
+            const double edge_cost =
+                planner.cost(previous, cell);
+
+            assert(std::isfinite(edge_cost));
+            assert(
+                std::abs(edge_cost - 1.0) <= EPS
+            );
+
+            path_cost += edge_cost;
+        }
+
+        // The wall spans the entire grid except for this opening.
+        assert(passed_through_opening);
+
+        /*
+        * Shortest route:
+        *
+        * (1,1) -> (4,7): 3 + 6 = 9 moves
+        * (4,7) -> (8,1): 4 + 6 = 10 moves
+        *
+        * Total = 19 moves.
+        */
+        assert(
+            std::abs(path_cost - 19.0) <= EPS
+        );
+
+        assert(path.size() == 20);
+
+        assert(
+            std::abs(planner.g(start) - 19.0) <= EPS
+        );
+
+        assert(
+            std::abs(planner.rhs(start) - 19.0) <= EPS
+        );
+
+        std::cout
+            << "Phase 9 Test 2 passed: "
+            << "path through wall opening.\n";
+
+        std::cout
+            << "Path cost: "
+            << path_cost
+            << '\n';
+
+        grid.print(start, goal, path);
+    }
+
+    // ------------------------------------------------------------
+    // Test 3: Start equals goal
+    // ------------------------------------------------------------
+    {
+        Grid grid(5, 5, 0.1);
+
+        const Coord start{2, 2};
+        const Coord goal{2, 2};
+
+        DStarLite planner(grid, start, goal);
+
+        planner.computeShortestPath();
+
+        const std::vector<Coord> path =
+            planner.extractPath();
+
+        // A zero-movement path still contains one cell.
+        assert(path.size() == 1);
+        assert(path.front() == start);
+        assert(path.back() == goal);
+
+        assert(
+            std::abs(planner.g(start)) <= EPS
+        );
+
+        assert(
+            std::abs(planner.rhs(start)) <= EPS
+        );
+
+        std::cout
+            << "Phase 9 Test 3 passed: "
+            << "start equals goal.\n";
+    }
+
+    // ------------------------------------------------------------
+    // Test 4: No path exists
+    // ------------------------------------------------------------
+    {
+        Grid grid(5, 5, 0.1);
+
+        const Coord start{0, 0};
+        const Coord goal{4, 4};
+
+        // Block both possible exits from the corner start.
+        const Coord blocked_right{1, 0};
+        const Coord blocked_down{0, 1};
+
+        grid.setState(blocked_right, 1);
+        grid.setState(blocked_down, 1);
+
+        DStarLite planner(grid, start, goal);
+
+        planner.computeShortestPath();
+
+        const std::vector<Coord> path =
+            planner.extractPath();
+
+        // No path should be returned.
+        assert(path.empty());
+
+        // In the non-optimized algorithm, an unreachable start
+        // ends with g(start) = rhs(start) = infinity.
+        assert(std::isinf(planner.g(start)));
+        assert(std::isinf(planner.rhs(start)));
+
+        std::cout
+            << "Phase 9 Test 4 passed: "
+            << "no-path case.\n";
+    }
+
+    std::cout
+        << "All Phase 9 path extraction tests passed.\n";
+
     return 0;
 }

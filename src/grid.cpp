@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <cassert>
 
 bool Coord::operator==(const Coord& other) const {
     if (x == other.x && y == other.y) {
@@ -117,8 +118,10 @@ double Grid::traversalCost(const Coord& s) const {
 
     if (state(s) == 1) {
         return std::numeric_limits<double>::infinity();
+    } else if(state(s)==-1){
+        return 1.5;
     } else {
-        return 1.0;
+        return 1.0
     }
 }
 
