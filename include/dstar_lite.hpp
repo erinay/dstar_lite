@@ -82,6 +82,8 @@ public:
 
     std::vector<Coord> extractPath() const;
 
+    void moveStart(const Coord& new_start);
+
     void updateCellState(const Coord& cell, int new_state);
 
     // Temporary queue accessors for Phase 4 testing.

@@ -314,5 +314,13 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
 
     }
 
+    void DStarLite::moveStart(const Coord& new_start){
+        const Coord& prev_start = start_;
+        // update km = km+h(s_ast, s_start)', let h be manhatten distance 
+        km_ += heuristic(prev_start, new_start);
+        previous_start_ = prev_start;
+        start_ = new_start;
+    }
+
 
 

@@ -119,9 +119,9 @@ double Grid::traversalCost(const Coord& s) const {
     if (state(s) == 1) {
         return std::numeric_limits<double>::infinity();
     } else if(state(s)==-1){
-        return 1.5;
+        return 1.0;
     } else {
-        return 1.0
+        return 1.0;
     }
 }
 
