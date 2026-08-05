@@ -13,6 +13,7 @@ add_library(path_planning
     src/grid.cpp
     src/astar.cpp
     src/dstar_lite.cpp
+    src/pipeline_test.cpp
 )
 
 target_include_directories(path_planning
@@ -41,6 +42,10 @@ add_executable(dstar_astar_test
     src/dstar_astar_test.cpp
 )
 
+add_executable(pipeline_test
+    src/pipeline_test.cpp
+)
+
 target_link_libraries( astar_test
     PRIVATE
         path_planning
@@ -52,6 +57,11 @@ target_link_libraries( dstar_state_test
 )
 
 target_link_libraries( dstar_astar_test
+    PRIVATE
+        path_planning
+)
+
+target_link_libraries( pipeline_test
     PRIVATE
         path_planning
 )
@@ -78,6 +88,13 @@ target_compile_options(dstar_astar_test
         -Wpedantic
 )
 
+target_compile_options(pipeline_test
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # Register the current assert-based test with CTest.
 if(BUILD_TESTING)
     enable_testing()
@@ -97,6 +114,11 @@ if(BUILD_TESTING)
         COMMAND dstar_astar_test
     )
     
+    add_test(
+        NAME pipeline_test
+        COMMAND pipeline_test
+    )
+    
 endif()
 
 # Install headers.
@@ -112,6 +134,7 @@ install(
         astar_test
         dstar_state_test
         dstar_astar_test
+        pipeline_test
     EXPORT export_path_planning
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
