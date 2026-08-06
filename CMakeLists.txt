@@ -2,18 +2,37 @@ cmake_minimum_required(VERSION 3.16)
 
 project(dstar_lite)
 
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+
 find_package(ament_cmake REQUIRED)
+
+find_package(rclcpp REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+
+# ---------------------------------------------------------------------------
+# Compiler configuration
+# ---------------------------------------------------------------------------
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Grid and planning algorithms
+# ---------------------------------------------------------------------------
+# Core path-planning library
+# ---------------------------------------------------------------------------
+
 add_library(path_planning
     src/grid.cpp
     src/astar.cpp
     src/dstar_lite.cpp
-    src/pipeline_test.cpp
 )
 
 target_include_directories(path_planning
@@ -29,73 +48,95 @@ target_compile_options(path_planning
         -Wpedantic
 )
 
-# Test executable
+# ---------------------------------------------------------------------------
+# ROS 2 node
+# ---------------------------------------------------------------------------
+
+add_executable(dstar_lite_node
+    src/dstar_lite_ros.cpp
+)
+
+# Do not use PRIVATE here.
+# ament_target_dependencies() uses the plain target_link_libraries signature.
+target_link_libraries(dstar_lite_node
+    path_planning
+)
+
+ament_target_dependencies(dstar_lite_node
+    rclcpp
+    nav_msgs
+    sensor_msgs
+    geometry_msgs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
+)
+
+target_compile_options(dstar_lite_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+# ---------------------------------------------------------------------------
+# Test executables
+# ---------------------------------------------------------------------------
+
 add_executable(astar_test
     src/main.cpp
+)
+
+target_link_libraries(astar_test
+    PRIVATE
+        path_planning
 )
 
 add_executable(dstar_state_test
     src/dstar_state_test.cpp
 )
 
+target_link_libraries(dstar_state_test
+    PRIVATE
+        path_planning
+)
+
 add_executable(dstar_astar_test
     src/dstar_astar_test.cpp
+)
+
+target_link_libraries(dstar_astar_test
+    PRIVATE
+        path_planning
 )
 
 add_executable(pipeline_test
     src/pipeline_test.cpp
 )
 
-target_link_libraries( astar_test
+target_link_libraries(pipeline_test
     PRIVATE
         path_planning
 )
 
-target_link_libraries( dstar_state_test
-    PRIVATE
-        path_planning
+foreach(test_target
+    astar_test
+    dstar_state_test
+    dstar_astar_test
+    pipeline_test
 )
+    target_compile_options(${test_target}
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+endforeach()
 
-target_link_libraries( dstar_astar_test
-    PRIVATE
-        path_planning
-)
+# ---------------------------------------------------------------------------
+# Register assert-based tests with CTest
+# ---------------------------------------------------------------------------
 
-target_link_libraries( pipeline_test
-    PRIVATE
-        path_planning
-)
-
-target_compile_options(astar_test
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
-
-target_compile_options(dstar_state_test
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
-
-
-target_compile_options(dstar_astar_test
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
-
-target_compile_options(pipeline_test
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
-
-# Register the current assert-based test with CTest.
 if(BUILD_TESTING)
     enable_testing()
 
@@ -113,21 +154,22 @@ if(BUILD_TESTING)
         NAME dstar_astar_tests
         COMMAND dstar_astar_test
     )
-    
+
     add_test(
-        NAME pipeline_test
+        NAME pipeline_tests
         COMMAND pipeline_test
     )
-    
 endif()
 
-# Install headers.
+# ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+
 install(
     DIRECTORY include/
     DESTINATION include
 )
 
-# Install the library and executable.
 install(
     TARGETS
         path_planning
@@ -135,13 +177,20 @@ install(
         dstar_state_test
         dstar_astar_test
         pipeline_test
+        dstar_lite_node
+
     EXPORT export_path_planning
+
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION lib/${PROJECT_NAME}
+
     INCLUDES DESTINATION include
 )
 
-ament_export_targets(export_path_planning HAS_LIBRARY_TARGET)
+ament_export_targets(
+    export_path_planning
+    HAS_LIBRARY_TARGET
+)
 
 ament_package()

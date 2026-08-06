@@ -302,7 +302,15 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
             return; //do nothing
         }
 
+
+        // check if cost changes
+        const double old_cost = grid_.traversalCost(cell);
         grid_.setState(cell, new_state);
+        const double new_cost = grid_.traversalCost(cell);
+
+        if (approximatelyEqual(old_cost, new_cost)) {
+            return;
+        }
 
         // if any edge cost changes, km = km+h(s_last, s_start) and slast=s_start;
         //***actually, skip this for now, static map */
