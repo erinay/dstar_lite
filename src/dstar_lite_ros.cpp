@@ -221,220 +221,63 @@ class DStarLiteNode: public rclcpp::Node{
         constexpr double pi = 3.14159265358979323846;
         constexpr double degrees_to_radians = pi / 180.0;
         constexpr std::uint16_t unknown_distance = std::numeric_limits<std::uint16_t>::max();
+        const double min_range = (double)(msg->min_distance) / 100.0;
+        const double max_range = (double)(msg->max_distance) / 100.0;
 
-        std::size_t first_used = msg->distances.size();
-        std::size_t last_used = 0;
-
-        for (std::size_t i = 0; i < msg->distances.size(); i++) {
-            if (msg->distances[i] != unknown_distance) {
-                first_used = std::min(first_used, i);
-                last_used = std::max(last_used, i);
-            }
-        }
-
-        if (first_used == msg->distances.size()) {
-            return;
-        }
-
-        auto scan = std::make_shared<sensor_msgs::msg::LaserScan>();
-        scan->header.stamp = now();
-        scan->header.frame_id = "base_link";
-        scan->range_min = static_cast<float>(msg->min_distance) / 100.0F;
-        scan->range_max = static_cast<float>(msg->max_distance) / 100.0F;
-        scan->angle_increment = static_cast<float>(static_cast<double>(msg->increment) * degrees_to_radians);
-
-        const double first_body_angle = static_cast<double>(msg->angle_offset) + static_cast<double>(last_used) * static_cast<double>(msg->increment);
-        const double last_body_angle = static_cast<double>(msg->angle_offset) + static_cast<double>(first_used) * static_cast<double>(msg->increment);
-
-        scan->angle_min = static_cast<float>(-first_body_angle * degrees_to_radians);
-        scan->angle_max = static_cast<float>(-last_body_angle * degrees_to_radians);
-        scan->time_increment = 0.0F;
-        scan->scan_time = 0.0F;
-        scan->ranges.reserve(last_used - first_used + 1);
-        for (std::size_t offset = 0; offset <= last_used - first_used; ++offset)
-        {
-            const std::size_t px4_index = last_used - offset;
-            const std::uint16_t distance_cm = msg->distances[px4_index];
-
-            if (distance_cm == unknown_distance) {
-                scan->ranges.push_back(
-                    std::numeric_limits<float>::quiet_NaN());
-                continue;
-            }
-
-            const std::uint32_t clear_value = static_cast<std::uint32_t>(msg->max_distance) + 1U;
-
-            if (static_cast<std::uint32_t>(distance_cm) == clear_value) {
-                scan->ranges.push_back(std::numeric_limits<float>::infinity());
-                continue;
-            }
-
-            if (distance_cm < msg->min_distance || distance_cm > msg->max_distance) {
-                scan->ranges.push_back(std::numeric_limits<float>::quiet_NaN());
-                continue;
-            }
-
-            scan->ranges.push_back(static_cast<float>(distance_cm) / 100.0F);
-        }
-
-        scan_callback(scan);
-    }
-
-    void scan_callback(const sensor_msgs::msg::LaserScan::ConstSharedPtr msg){
-        if (!have_odom_) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Waiting for PX4 vehicle odometry");
-            return;
-        }
-
+        //LiDAR located at drone origin
         const double sensor_x = position_enu_.x();
         const double sensor_y = position_enu_.y();
-
-        std::vector<Coord> free_cells;
         std::vector<Coord> occupied_cells;
+        const std::uint32_t clear_value = static_cast<std::uint32_t>(msg->max_distance) + 1U;
+        const int inflation_extent = (int)(std::ceil(inflation_radius_ / map_resolution_));
 
-        const double ray_step = 0.5 * map_resolution_;
+        for (std::size_t i = 0; i <= mmsg->distances.size(); i++){
+            const std::uint16_t distance_cm = msg->distances[i];
 
-        for (std::size_t i = 0; i < msg->ranges.size(); i++) {
-            const double raw_range = static_cast<double>(msg->ranges[i]);
+            if (distance_cm == unknown_distance) {
+                continue; //unknown distance
+            }
+            if (static_cast<std::uint32_t>(distance_cm) == clear_value) {
+                continue; //no obstacle detected
+            }
+            if (distance_cm < msg->min_distance || distance_cm > msg->max_distance) {
+                continue; //invalid obstacle measuremtns
+            }
 
-            bool obstacle_hit = false;
-            double ray_length = 0.0;
+            // First, sensor processing
+            const double range = (double)((distance_cm)/100.0); //evrything in cm
+            const double angle_flu = -(((double)(msg->angle_offset))+(double)(i)*(double)(msg->increment)*degrees_to_radians); //negative of neu
+            const Eigen::Vector3d endpoint_flu{range*std::cos(angle_flu), range*std::sin(angle_flu),0.0};
+            const Eigen::Vector3d endpoint_enu = position_enu+q_enu_flu*endpoint_flu;
 
-            if (std::isfinite(raw_range)) {
-                // Discard measurements that are too close.
-                if (raw_range < msg->range_min) {
-                    continue;
-                }
-                if (raw_range < msg->range_max) {
-                    obstacle_hit = true;
-                    ray_length = raw_range;
-                } else {
-                    // No obstacle detected.
-                    ray_length = msg->range_max;
-                }
-            } else if (std::isinf(raw_range) && raw_range > 0.0) {
-                // Positive infinity means no return.
-                ray_length = msg->range_max;
-            } else {
-                // Disregard NaN and negative infinity.
+            Coord obstacle_cell;
+            if(!word2grid(endpoint_enu.x(), endpoint_enu.y(), obstacle_cell)){
                 continue;
             }
 
-            const double angle =
-                static_cast<double>(msg->angle_min) +
-                static_cast<double>(i) *
-                static_cast<double>(msg->angle_increment);
-
-            const Eigen::Vector3d endpoint_body{ray_length * std::cos(angle), ray_length * std::sin(angle), 0.0};
-
-            // Rotate LiDAR from FLU to ENU and translate by drone position.
-            const Eigen::Vector3d endpoint_enu = position_enu_ + q_enu_flu_ * endpoint_body;
-
-            const double endpoint_x = endpoint_enu.x();
-            const double endpoint_y = endpoint_enu.y();
-
-            const double dx = endpoint_x - sensor_x;
-            const double dy = endpoint_y - sensor_y;
-
-            const double world_distance = std::hypot(dx, dy);
-            const int number_of_steps = std::max(1, static_cast<int>(std::ceil(world_distance / ray_step)));
-
-            // Mark all cells before the endpoint free.
-            for (int step = 0; step < number_of_steps; ++step) {
-                const double alpha = static_cast<double>(step) / static_cast<double>(number_of_steps);
-                const double sample_x = sensor_x + alpha * dx;
-                const double sample_y = sensor_y + alpha * dy;
-
-                Coord free_cell;
-
-                if (world2grid(sample_x, sample_y, free_cell)) {
-                    free_cells.push_back(free_cell);
+            for (int dy=-inflation_extent; dy<=inflation_extent; dy++){
+                for(int dx=-inflation_extent; dx<=inflation_extent;dx++){
+                    const double distance_squared = (double) (dx*dx+dy*dx);
+                    if((distance_squared)>(inflation_extent*inflation_extent)){
+                        continue;
+                    }
+                    const Coord inflated_cell{obstacle_cell.x+dx, obstacle_cell.dy};
+                    // if cells are outside of grid, or on drone, ignore
+                    if (inflated_cell.x < 0 || inflated_cell.x >= map_width_ || inflated_cell.y < 0 || inflated_cell.y >= map_height_) {
+                        continue;
+                    } else if(inflated_cell.x == start_cell_.x && inflated_cell.y == start_cell_.y) {
+                        continue;
+                    }
+                    //skip cells if we know is occupied
+                    if(belief_grid_->state(inflated_cell)==1){
+                        continue;
+                    }
+                    // else, update belief grid and D lite vertex information
                 }
             }
 
-            Coord endpoint_cell;
-
-            if (!world2grid(endpoint_x, endpoint_y, endpoint_cell)) {
-                continue;
-            }
-
-            if (obstacle_hit) {
-                occupied_cells.push_back(endpoint_cell);
-            } else {
-                free_cells.push_back(endpoint_cell);
-            }
         }
 
-        bool planning_cost_changed = false;
-        int changed_states = 0;
-
-        // Apply free observations first.
-        for (const Coord& cell : free_cells) {
-            const int current_state = belief_grid_->state(cell);
-
-            // Do not erase persistent occupied cells in the static maze.
-            if (current_state == 0 || current_state == 1) {
-                continue;
-            }
-            planning_cost_changed = apply_observation(cell, 0) || planning_cost_changed;
-            ++changed_states;
-        }
-
-        const double inflation_radius_cells = inflation_radius_ / map_resolution_;
-
-        const int inflation_extent = static_cast<int>(std::ceil(inflation_radius_cells));
-
-        const double inflation_radius_squared = inflation_radius_cells * inflation_radius_cells;
-
-        // Apply occupied observations with circular inflation.
-        for (const Coord& obstacle_cell : occupied_cells) {
-            for (int dy = -inflation_extent; dy <= inflation_extent; dy++) {
-                for (int dx = -inflation_extent; dx <= inflation_extent; dx++) {
-                    const double distance_squared =
-                        static_cast<double>(dx * dx + dy * dy);
-
-                    if (distance_squared > inflation_radius_squared) {
-                        continue;
-                    }
-
-                    const Coord inflated_cell{obstacle_cell.x + dx, obstacle_cell.y + dy};
-
-                    if (inflated_cell.x < 0 || inflated_cell.x >= map_width_ || inflated_cell.y < 0 || inflated_cell.y >= map_height_){
-                        continue;
-                    }
-
-                    // Never mark the current drone cell occupied.
-                    if (inflated_cell.x == start_cell_.x && inflated_cell.y == start_cell_.y){
-                        continue;
-                    }
-
-                    if (belief_grid_->state(inflated_cell) == 1) {
-                        continue;
-                    }
-
-                    planning_cost_changed =
-                        apply_observation(inflated_cell, 1) ||
-                        planning_cost_changed;
-
-                    ++changed_states;
-                }
-            }
-        }
-
-        // Repair D* Lite once after processing the full scan.
-        if (planning_cost_changed) {
-            planner_->computeShortestPath();
-        }
-
-        publish_belief_map();
-        publish_path();
-
-        RCLCPP_DEBUG(
-            get_logger(),
-            "Processed scan: %d belief-state changes, %zu obstacle endpoints",
-            changed_states,
-            occupied_cells.size()
-        );
     }
 
     void publish_belief_map(){

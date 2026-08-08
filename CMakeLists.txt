@@ -11,6 +11,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -74,6 +75,31 @@ ament_target_dependencies(dstar_lite_node
 )
 
 target_compile_options(dstar_lite_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+add_executable(turtlebot_dstar_lite_node
+    src/turtlebot_dstar_lite_ros.cpp
+)
+
+target_link_libraries(turtlebot_dstar_lite_node
+    path_planning
+)
+
+ament_target_dependencies(turtlebot_dstar_lite_node
+    rclcpp
+    nav_msgs
+    sensor_msgs
+    std_msgs
+    geometry_msgs
+    tf2
+    tf2_geometry_msgs
+)
+
+target_compile_options(turtlebot_dstar_lite_node
     PRIVATE
         -Wall
         -Wextra
@@ -179,6 +205,7 @@ install(
         dstar_astar_test
         pipeline_test
         dstar_lite_node
+        turtlebot_dstar_lite_node
 
     EXPORT export_path_planning
 
