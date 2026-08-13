@@ -24,6 +24,7 @@ private:
     int height_;
     double resolution_;
     std::vector<int> cells_;
+    std::vector<double> traversal_costs_;
 
     // Convert a 2D coordinate to a vector index
     std::size_t index(const Coord& s) const;
@@ -49,11 +50,13 @@ public:
     // Cell access
     int state(const Coord& s) const;
     void setState(const Coord& s, int state);
+    void setTraversalCost(const Coord& s, double cost);
 
     // Four-connected neighbors
     std::vector<Coord> neighbors(const Coord& s) const;
 
-    // Free/unknown cost = 1; occupied cost = infinity
+    // Occupied cells cost infinity. Free and unknown cells have a finite,
+    // configurable traversal cost used to prefer the centre of corridors.
     double traversalCost(const Coord& s) const;
 
     // Print grid

@@ -322,6 +322,25 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
 
     }
 
+    void DStarLite::updateCell(
+        const Coord& cell, int new_state, double traversal_cost)
+    {
+        const double old_cost = grid_.traversalCost(cell);
+        grid_.setState(cell, new_state);
+        grid_.setTraversalCost(cell, traversal_cost);
+        const double new_cost = grid_.traversalCost(cell);
+
+        if (approximatelyEqual(old_cost, new_cost)) {
+            return;
+        }
+
+        // Changing the cost of entering this cell changes each edge that
+        // terminates here, so refresh its predecessors.
+        for (const Coord& neighbor : grid_.neighbors(cell)) {
+            updateVertex(neighbor);
+        }
+    }
+
     void DStarLite::moveStart(const Coord& new_start){
         const Coord& prev_start = start_;
         // update km = km+h(s_ast, s_start)', let h be manhatten distance 
@@ -329,6 +348,5 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
         previous_start_ = prev_start;
         start_ = new_start;
     }
-
 
 

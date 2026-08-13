@@ -17,6 +17,11 @@ find_package(px4_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(octomap REQUIRED)
+find_package(octomap_msgs REQUIRED)
+find_package(gz-transport13 REQUIRED)
+find_package(gz-msgs10 REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Compiler configuration
@@ -81,6 +86,112 @@ target_compile_options(dstar_lite_node
         -Wpedantic
 )
 
+add_executable(obstacle_distance_octomap_node
+    src/obstacle_distance_octomap.cpp
+)
+
+target_include_directories(obstacle_distance_octomap_node
+    PRIVATE
+        ${OCTOMAP_INCLUDE_DIRS}
+)
+
+target_link_libraries(obstacle_distance_octomap_node
+    ${OCTOMAP_LIBRARIES}
+    Eigen3::Eigen
+)
+
+ament_target_dependencies(obstacle_distance_octomap_node
+    rclcpp
+    geometry_msgs
+    nav_msgs
+    sensor_msgs
+    px4_msgs
+    octomap_msgs
+)
+
+target_compile_options(obstacle_distance_octomap_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+add_executable(laser_scan_octomap_node
+    src/laser_scan_octomap.cpp
+)
+
+target_include_directories(laser_scan_octomap_node
+    PRIVATE
+        ${OCTOMAP_INCLUDE_DIRS}
+)
+
+target_link_libraries(laser_scan_octomap_node
+    ${OCTOMAP_LIBRARIES}
+    Eigen3::Eigen
+)
+
+ament_target_dependencies(laser_scan_octomap_node
+    rclcpp
+    geometry_msgs
+    nav_msgs
+    sensor_msgs
+    tf2
+    tf2_ros
+    octomap_msgs
+)
+
+target_compile_options(laser_scan_octomap_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+add_executable(px4_lidar_tf_broadcaster_node
+    src/px4_lidar_tf_broadcaster.cpp
+)
+
+target_link_libraries(px4_lidar_tf_broadcaster_node
+    Eigen3::Eigen
+)
+
+ament_target_dependencies(px4_lidar_tf_broadcaster_node
+    rclcpp
+    geometry_msgs
+    px4_msgs
+    tf2_ros
+)
+
+target_compile_options(px4_lidar_tf_broadcaster_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+add_executable(gazebo_lidar_tf_broadcaster_node
+    src/gazebo_lidar_tf_broadcaster.cpp
+)
+
+target_link_libraries(gazebo_lidar_tf_broadcaster_node
+    Eigen3::Eigen
+    gz-transport13::core
+    gz-msgs10::core
+)
+
+ament_target_dependencies(gazebo_lidar_tf_broadcaster_node
+    rclcpp
+    geometry_msgs
+    tf2_ros
+)
+
+target_compile_options(gazebo_lidar_tf_broadcaster_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 add_executable(turtlebot_dstar_lite_node
     src/turtlebot_dstar_lite_ros.cpp
 )
@@ -100,6 +211,26 @@ ament_target_dependencies(turtlebot_dstar_lite_node
 )
 
 target_compile_options(turtlebot_dstar_lite_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+add_executable(turtlebot_waypoint_controller
+    src/turtlebot_waypoint_controller.cpp
+)
+
+ament_target_dependencies(turtlebot_waypoint_controller
+    rclcpp
+    nav_msgs
+    sensor_msgs
+    geometry_msgs
+    tf2
+    tf2_geometry_msgs
+)
+
+target_compile_options(turtlebot_waypoint_controller
     PRIVATE
         -Wall
         -Wextra
@@ -205,7 +336,12 @@ install(
         dstar_astar_test
         pipeline_test
         dstar_lite_node
+        obstacle_distance_octomap_node
+        laser_scan_octomap_node
+        px4_lidar_tf_broadcaster_node
+        gazebo_lidar_tf_broadcaster_node
         turtlebot_dstar_lite_node
+        turtlebot_waypoint_controller
 
     EXPORT export_path_planning
 
@@ -214,6 +350,11 @@ install(
     RUNTIME DESTINATION lib/${PROJECT_NAME}
 
     INCLUDES DESTINATION include
+)
+
+install(
+    DIRECTORY launch/
+    DESTINATION share/${PROJECT_NAME}/launch
 )
 
 ament_export_targets(

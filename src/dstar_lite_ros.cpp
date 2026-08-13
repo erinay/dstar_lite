@@ -13,6 +13,7 @@
 #include "grid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -46,14 +48,23 @@ class DStarLiteNode: public rclcpp::Node{
                 0, 0, -1;
 
         R_FLU2FRD << 1, 0, 0,
-                        0, -1, 0,
-                        0, 0, -1;
+                0, -1, 0,
+                0, 0, -1;
 
-        // Subscribers
-        odom_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(
-            "/fmu/out/vehicle_odometry", sensor_qos, std::bind(&DStarLiteNode::odom_callback, this, std::placeholders::_1));
-        obstacle_subscriber_ = this->create_subscription<px4_msgs::msg::ObstacleDistance>(
-            "/fmu/out/obstacle_distance", sensor_qos, std::bind(&DStarLiteNode::obstacle_callback, this, std::placeholders::_1));
+        // Use PX4 odometry by default.  During Gazebo raw-lidar validation,
+        // robot_pose_topic supplies the exact simulator pose in planning_frame
+        // so D* and the voxel slice share one world frame.
+        if (robot_pose_topic_.empty()) {
+            odom_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(
+                odometry_topic_, sensor_qos,
+                std::bind(&DStarLiteNode::odom_callback, this, std::placeholders::_1));
+        } else {
+            robot_pose_subscriber_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+                robot_pose_topic_, 10,
+                std::bind(&DStarLiteNode::robot_pose_callback, this, std::placeholders::_1));
+        }
+        voxel_slice_subscriber_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+            "/voxel_slice", 1, std::bind(&DStarLiteNode::voxel_slice_callback, this, std::placeholders::_1));
 
         // Publishers
         belief_publisher_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/belief_map", 1);
@@ -67,7 +78,8 @@ class DStarLiteNode: public rclcpp::Node{
     
     // Publishers & Subscripers
     rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odom_subscriber_;
-    rclcpp::Subscription<px4_msgs::msg::ObstacleDistance>::SharedPtr obstacle_subscriber_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr robot_pose_subscriber_;
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr voxel_slice_subscriber_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr belief_publisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_publisher_;
@@ -84,9 +96,18 @@ class DStarLiteNode: public rclcpp::Node{
     double goal_y_{0.0};
     int map_width_{0};
     int map_height_{0};
-    double inflation_radius_{0.35};
+    // A finite, distance-based penalty near a wall. Unlike hard obstacle
+    // inflation, this keeps narrow passages traversable while preferring the
+    // middle of a corridor.
+    double wall_cost_radius_{0.50};
+    double wall_cost_gain_{4.0};
+
+    const float look_ahead = 3.0f;
+
     bool have_odom_;
     std::string planning_frame_{"odom"};
+    std::string robot_pose_topic_;
+    std::string odometry_topic_;
 
     Coord start_cell_;
     Coord goal_cell_;
@@ -98,7 +119,7 @@ class DStarLiteNode: public rclcpp::Node{
 
     Eigen::Vector3d position_enu_{0.0, 0.0, 0.0};
     Eigen::Quaterniond q_enu_flu_{1.0, 0.0, 0.0, 0.0};
-    Eigen::Matrix3d R_NED2ENU, R_FLU2FRD;
+    Eigen::Matrix3d R_NED2ENU, R_FLU2FRD, R_ENU_FLU;
 
     int occupied_threshold = 60;
 
@@ -113,6 +134,16 @@ class DStarLiteNode: public rclcpp::Node{
         initial_start_y_ =declare_parameter<double>("start_y",1.25);
         goal_x_ =declare_parameter<double>("goal_x",18.75);
         goal_y_ =declare_parameter<double>("goal_y",13.75);
+        planning_frame_ = declare_parameter<std::string>("planning_frame", "odom");
+        robot_pose_topic_ = declare_parameter<std::string>("robot_pose_topic", "");
+        odometry_topic_ = declare_parameter<std::string>(
+            "odometry_topic", "/fmu/out/vehicle_odometry");
+        wall_cost_radius_ = declare_parameter<double>("wall_cost_radius", 0.50);
+        wall_cost_gain_ = declare_parameter<double>("wall_cost_gain", 4.0);
+        if (wall_cost_radius_ < 0.0 || wall_cost_gain_ < 0.0) {
+            throw std::runtime_error(
+                "wall_cost_radius and wall_cost_gain must be non-negative");
+        }
     }
 
     void initialize(){
@@ -170,41 +201,80 @@ class DStarLiteNode: public rclcpp::Node{
         position_enu_ = R_NED2ENU * pos_enu;
         q_measured.normalize();
 
-        const Eigen::Matrix3d R_ENU_FLU = R_NED2ENU * q_measured.toRotationMatrix() * R_FLU2FRD;
+        const Eigen::Matrix3d R_ENU_FLU = R_NED2ENU* q_measured.toRotationMatrix() * R_FLU2FRD;
         q_enu_flu_ = Eigen::Quaterniond(R_ENU_FLU);
 
         q_enu_flu_.normalize();
 
-        robot_pose_.position.x = pos_enu.x();
-        robot_pose_.position.y = pos_enu.y();
-        robot_pose_.position.z = pos_enu.z();
+        robot_pose_.position.x = position_enu_.x();
+        robot_pose_.position.y = position_enu_.y();
+        robot_pose_.position.z = position_enu_.z();
 
         robot_pose_.orientation.w = q_enu_flu_.w();
         robot_pose_.orientation.x = q_enu_flu_.x();
         robot_pose_.orientation.y = q_enu_flu_.y();
         robot_pose_.orientation.z = q_enu_flu_.z();
 
+        update_robot_position();
+    }
+
+    void robot_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        if (msg->header.frame_id != planning_frame_) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 2000,
+                "Ignoring robot pose in frame '%s'; expected planning_frame '%s'",
+                msg->header.frame_id.c_str(), planning_frame_.c_str());
+            return;
+        }
+
+        robot_pose_ = msg->pose;
+        position_enu_ << robot_pose_.position.x, robot_pose_.position.y, robot_pose_.position.z;
+        q_enu_flu_ = Eigen::Quaterniond(
+            robot_pose_.orientation.w,
+            robot_pose_.orientation.x,
+            robot_pose_.orientation.y,
+            robot_pose_.orientation.z);
+        if (q_enu_flu_.norm() < 1e-6) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Ignoring robot pose with invalid quaternion");
+            return;
+        }
+        q_enu_flu_.normalize();
+        update_robot_position();
+    }
+
+    void update_robot_position()
+    {
+        const bool first_odom = !have_odom_;
         have_odom_=true;
-        
+
         Coord new_start;
 
         if (!world2grid(position_enu_.x(), position_enu_.y(), new_start))
         {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Drone outside belief grid: ENU=(%.2f, %.2f)", position_enu_.x(), position_enu_.y());
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 2000,
+                "Robot outside belief grid in %s: (%.2f, %.2f)",
+                planning_frame_.c_str(), position_enu_.x(), position_enu_.y());
             return;
         }
         world2grid(position_enu_.x(), position_enu_.y(), new_start);
         const bool changed_cell = new_start.x != start_cell_.x || new_start.y != start_cell_.y;
         
-        if(!changed_cell){return;}
-        start_cell_=new_start;
-        planner_->moveStart(start_cell_);
+        if (!changed_cell && !first_odom) {
+            return;
+        }
+        if (changed_cell) {
+            start_cell_=new_start;
+            planner_->moveStart(start_cell_);
+        }
         planner_->computeShortestPath();
 
         publish_path();
     }   
 
     bool apply_observation(const Coord& cell, int observed_state){
+        // check if observation should be applied
         const int old_state = belief_grid_->state(cell);
         if (old_state == observed_state) {
             return false;
@@ -217,51 +287,238 @@ class DStarLiteNode: public rclcpp::Node{
         return !costs_equal(old_cost,new_cost);
         }
 
+    void voxel_slice_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
+    {
+        if (msg->info.resolution <= 0.0f || msg->data.size() !=
+            static_cast<std::size_t>(msg->info.width) * msg->info.height) {
+            RCLCPP_WARN(get_logger(), "Ignoring malformed voxel slice");
+            return;
+        }
+
+        // Build the desired planning grid from this complete source-map
+        // snapshot. This lets clearance cells disappear as soon as the source
+        // obstacle disappears, rather than leaving stale inflated obstacles.
+        std::vector<int> desired_states(
+            static_cast<std::size_t>(map_width_) * static_cast<std::size_t>(map_height_), -1);
+        const auto desired_index = [this](const Coord& cell) {
+            return static_cast<std::size_t>(cell.x) +
+                static_cast<std::size_t>(cell.y) * static_cast<std::size_t>(map_width_);
+        };
+
+        for (std::uint32_t y = 0; y < msg->info.height; ++y) {
+            for (std::uint32_t x = 0; x < msg->info.width; ++x) {
+                const std::size_t source_index =
+                    static_cast<std::size_t>(x) + static_cast<std::size_t>(y) * msg->info.width;
+                const std::int8_t occupancy = msg->data[source_index];
+                const int state = occupancy < 0 ? -1 : (occupancy >= occupied_threshold ? 1 : 0);
+
+                Coord target_cell;
+                const double world_x = msg->info.origin.position.x +
+                    (static_cast<double>(x) + 0.5) * msg->info.resolution;
+                const double world_y = msg->info.origin.position.y +
+                    (static_cast<double>(y) + 0.5) * msg->info.resolution;
+                if (!world2grid(world_x, world_y, target_cell) ||
+                    (target_cell == start_cell_)) {
+                    continue;
+                }
+
+                const std::size_t index = desired_index(target_cell);
+                // A source grid with a different resolution can map several
+                // cells into one planner cell. Occupied wins over free; free
+                // wins over unknown.
+                if (state == 1 || (state == 0 && desired_states[index] != 1)) {
+                    desired_states[index] = state;
+                }
+            }
+        }
+
+        // Multi-source Dijkstra gives every planner cell its Euclidean-like
+        // distance from the nearest observed obstacle.  It is much cheaper
+        // than comparing every map cell against every wall point.
+        const std::size_t cell_count = desired_states.size();
+        std::vector<double> wall_distance(cell_count,
+            std::numeric_limits<double>::infinity());
+        using DistanceEntry = std::pair<double, Coord>;
+        const auto farther_first = [](const DistanceEntry& left,
+                                      const DistanceEntry& right) {
+            return left.first > right.first;
+        };
+        std::priority_queue<DistanceEntry, std::vector<DistanceEntry>,
+            decltype(farther_first)> open_distances(farther_first);
+
+        for (int y = 0; y < map_height_; ++y) {
+            for (int x = 0; x < map_width_; ++x) {
+                const Coord cell{x, y};
+                if (desired_states[desired_index(cell)] == 1) {
+                    wall_distance[desired_index(cell)] = 0.0;
+                    open_distances.push({0.0, cell});
+                }
+            }
+        }
+
+        const std::array<Coord, 8> distance_neighbors{{
+            {-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+            {1, 0}, {-1, 1}, {0, 1}, {1, 1},
+        }};
+        while (!open_distances.empty()) {
+            const auto [distance, cell] = open_distances.top();
+            open_distances.pop();
+            if (distance > wall_distance[desired_index(cell)] + 1e-9) {
+                continue;
+            }
+
+            for (const Coord& direction : distance_neighbors) {
+                const Coord neighbor{cell.x + direction.x, cell.y + direction.y};
+                if (!belief_grid_->inBounds(neighbor)) {
+                    continue;
+                }
+                const double step = (direction.x != 0 && direction.y != 0)
+                    ? std::sqrt(2.0) * map_resolution_
+                    : map_resolution_;
+                const double candidate = distance + step;
+                const std::size_t neighbor_index = desired_index(neighbor);
+                if (candidate + 1e-9 >= wall_distance[neighbor_index]) {
+                    continue;
+                }
+                wall_distance[neighbor_index] = candidate;
+                open_distances.push({candidate, neighbor});
+            }
+        }
+
+        bool state_changed = false;
+        bool planning_cost_changed = false;
+        for (int y = 0; y < map_height_; ++y) {
+            for (int x = 0; x < map_width_; ++x) {
+                const Coord target_cell{x, y};
+                if (target_cell == start_cell_) {
+                    continue;
+                }
+
+                const int state = desired_states[desired_index(target_cell)];
+                const double wall_distance_m = wall_distance[desired_index(target_cell)];
+                double traversal_cost = 1.0;
+                if (state != 1 && wall_cost_radius_ > 0.0 &&
+                    wall_distance_m < wall_cost_radius_)
+                {
+                    const double normalized_distance =
+                        1.0 - wall_distance_m / wall_cost_radius_;
+                    traversal_cost += wall_cost_gain_ *
+                        normalized_distance * normalized_distance;
+                }
+
+                const double old_cost = belief_grid_->traversalCost(target_cell);
+                if (belief_grid_->state(target_cell) == state &&
+                    costs_equal(old_cost, state == 1
+                        ? std::numeric_limits<double>::infinity() : traversal_cost)) {
+                    continue;
+                }
+                state_changed = true;
+                planner_->updateCell(target_cell, state, traversal_cost);
+                const double new_cost = belief_grid_->traversalCost(target_cell);
+                planning_cost_changed |= !costs_equal(old_cost, new_cost);
+            }
+        }
+
+        if (!state_changed) {
+            return;
+        }
+        if (planning_cost_changed) {
+            planner_->computeShortestPath();
+        }
+        publish_belief_map();
+        publish_path();
+    }
+
     void obstacle_callback(const px4_msgs::msg::ObstacleDistance::SharedPtr msg){
         constexpr double pi = 3.14159265358979323846;
         constexpr double degrees_to_radians = pi / 180.0;
         constexpr std::uint16_t unknown_distance = std::numeric_limits<std::uint16_t>::max();
-        const double min_range = (double)(msg->min_distance) / 100.0;
-        const double max_range = (double)(msg->max_distance) / 100.0;
-
-        //LiDAR located at drone origin
-        const double sensor_x = position_enu_.x();
-        const double sensor_y = position_enu_.y();
-        std::vector<Coord> occupied_cells;
         const std::uint32_t clear_value = static_cast<std::uint32_t>(msg->max_distance) + 1U;
-        const int inflation_extent = (int)(std::ceil(inflation_radius_ / map_resolution_));
 
-        for (std::size_t i = 0; i <= mmsg->distances.size(); i++){
+        if (!have_odom_) {
+            return;
+        }
+        if (msg->frame != px4_msgs::msg::ObstacleDistance::MAV_FRAME_BODY_FRD) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 2000,
+                "Ignoring ObstacleDistance frame %u; x500_lidar_2d must publish BODY_FRD (%u)",
+                msg->frame, px4_msgs::msg::ObstacleDistance::MAV_FRAME_BODY_FRD);
+            return;
+        }
+
+        std::vector<Coord> occupied_cells;
+        std::vector<Eigen::Vector3d> free_ray_endpoints;
+        // Raw ObstacleDistance is not part of the OctoMap launch path. Keep
+        // its legacy callback free of hard inflation as well.
+        const int inflation_extent = 0;
+
+        for (std::size_t i = 0; i < msg->distances.size(); i++){
             const std::uint16_t distance_cm = msg->distances[i];
 
             if (distance_cm == unknown_distance) {
                 continue; //unknown distance
             }
-            if (static_cast<std::uint32_t>(distance_cm) == clear_value) {
-                continue; //no obstacle detected
-            }
-            if (distance_cm < msg->min_distance || distance_cm > msg->max_distance) {
+            const bool clear_ray = static_cast<std::uint32_t>(distance_cm) == clear_value;
+            if (!clear_ray &&
+                (distance_cm < msg->min_distance || distance_cm > msg->max_distance)) {
                 continue; //invalid obstacle measuremtns
             }
 
-            // First, sensor processing
-            const double range = (double)((distance_cm)/100.0); //evrything in cm
-            const double angle_flu = -(((double)(msg->angle_offset))+(double)(i)*(double)(msg->increment)*degrees_to_radians); //negative of neu
-            const Eigen::Vector3d endpoint_flu{range*std::cos(angle_flu), range*std::sin(angle_flu),0.0};
-            const Eigen::Vector3d endpoint_enu = position_enu+q_enu_flu*endpoint_flu;
+            const double range = clear_ray
+                ? static_cast<double>(msg->max_distance) / 100.0
+                : static_cast<double>(distance_cm) / 100.0;
+            // ObstacleDistance angles are clockwise in BODY_FRD. Convert the
+            // endpoint to FLU before rotating it into the ENU planning frame.
+            const double angle_frd =
+                (static_cast<double>(msg->angle_offset) +
+                 static_cast<double>(i) * static_cast<double>(msg->increment)) * degrees_to_radians;
+            const Eigen::Vector3d endpoint_flu{
+                range * std::cos(angle_frd), -range * std::sin(angle_frd), 0.0};
+            const Eigen::Vector3d endpoint_enu = position_enu_+q_enu_flu_.toRotationMatrix()*endpoint_flu;
+            free_ray_endpoints.push_back(endpoint_enu);
 
-            Coord obstacle_cell;
-            if(!word2grid(endpoint_enu.x(), endpoint_enu.y(), obstacle_cell)){
+            if (clear_ray) {
                 continue;
             }
 
+            Coord obstacle_cell;
+            if(!world2grid(endpoint_enu.x(), endpoint_enu.y(), obstacle_cell)){
+                continue;
+            }
+            occupied_cells.push_back(obstacle_cell);
+        }
+
+        bool planning_cost_changed=false;
+
+        // Every measured ray is free up to its endpoint. Marking these cells
+        // prevents the belief map from remaining unknown between obstacles.
+        for (const Eigen::Vector3d& endpoint_enu : free_ray_endpoints) {
+            const Eigen::Vector2d ray =
+                (endpoint_enu - position_enu_).head<2>();
+            const int samples = std::max(
+                1, static_cast<int>(std::ceil(ray.norm() / (0.5 * map_resolution_))));
+
+            for (int sample = 1; sample < samples; ++sample) {
+                const Eigen::Vector3d point = position_enu_ +
+                    (static_cast<double>(sample) / samples) * (endpoint_enu - position_enu_);
+                Coord free_cell;
+                if (!world2grid(point.x(), point.y(), free_cell) ||
+                    (free_cell == start_cell_)) {
+                    continue;
+                }
+                planning_cost_changed |= apply_observation(free_cell, 0);
+            }
+        }
+
+        for (const Coord& obstacle_cell: occupied_cells){
             for (int dy=-inflation_extent; dy<=inflation_extent; dy++){
-                for(int dx=-inflation_extent; dx<=inflation_extent;dx++){
-                    const double distance_squared = (double) (dx*dx+dy*dx);
+                for(int dx=-inflation_extent; dx<=inflation_extent; dx++){
+                    const double distance_squared = (double) (dx*dx+dy*dy);
                     if((distance_squared)>(inflation_extent*inflation_extent)){
                         continue;
                     }
-                    const Coord inflated_cell{obstacle_cell.x+dx, obstacle_cell.dy};
+                    const Coord inflated_cell{obstacle_cell.x+dx, obstacle_cell.y+dy};
+
                     // if cells are outside of grid, or on drone, ignore
                     if (inflated_cell.x < 0 || inflated_cell.x >= map_width_ || inflated_cell.y < 0 || inflated_cell.y >= map_height_) {
                         continue;
@@ -273,10 +530,18 @@ class DStarLiteNode: public rclcpp::Node{
                         continue;
                     }
                     // else, update belief grid and D lite vertex information
+                    if(apply_observation(inflated_cell,1)){
+                        planning_cost_changed=true;
+                    }
                 }
             }
-
         }
+
+        if(planning_cost_changed){
+            planner_->computeShortestPath();
+        }
+        publish_belief_map();
+        publish_path();
 
     }
 
@@ -330,6 +595,10 @@ class DStarLiteNode: public rclcpp::Node{
     void publish_waypoint(const std::vector<Coord>& path) {
         std::size_t waypoint_index = 0;
 
+        if(path.empty()){
+            return;
+        }
+
         //If path[0] is the current start cell, command path[1].
         if (path[0].x == start_cell_.x && path[0].y == start_cell_.y) {
             if (path.size() == 1) {
@@ -337,6 +606,35 @@ class DStarLiteNode: public rclcpp::Node{
                 return;
             }
             waypoint_index = 1;
+        }
+
+        int dx_before = 0;
+        int dy_before = 0;
+        bool is_turn = false;
+
+        // Identify waypoint either ahead of lookahead point or corner
+        double distance = 0.0;
+
+        for(std::size_t i=1; i<path.size(); i++){
+            int dx = path[i].x - path[i-1].x;
+            int dy = path[i].y - path[i-1].y;
+            distance += std::sqrt(dx*dx+dy*dy)*map_resolution_;
+            
+            if(i != 1) {
+                is_turn = dx_before!=dx || dy_before!=dy;
+            }
+            
+            if(is_turn){
+                waypoint_index=i-1;
+                break;
+            }
+            if(distance>=look_ahead){
+                waypoint_index=i;
+                break;
+            }
+            dx_before=dx;
+            dy_before=dy;
+            waypoint_index=i;
         }
 
         const Coord& waypoint_cell = path[waypoint_index];
@@ -354,6 +652,7 @@ class DStarLiteNode: public rclcpp::Node{
 
         waypoint_publisher_->publish(waypoint_msg);
     }
+
     void publish_path(){
         if (!planner_) {
             return;

@@ -1,6 +1,7 @@
 #include "grid.hpp"
 
 #include <algorithm>  // std::find
+#include <cmath>
 #include <functional> // std::hash
 #include <iostream>
 #include <limits>
@@ -35,7 +36,8 @@ Grid::Grid(int width, int height, double resolution)
     : width_(width),
       height_(height),
       resolution_(resolution),
-      cells_(width * height, -1)
+      cells_(width * height, -1),
+      traversal_costs_(width * height, 1.0)
 {
 }
 
@@ -93,6 +95,14 @@ void Grid::setState(const Coord& s, int state) {
     cells_[index(s)] = state;
 }
 
+void Grid::setTraversalCost(const Coord& s, double cost) {
+    checkBounds(s);
+    if (!std::isfinite(cost) || cost < 1.0) {
+        throw std::invalid_argument("Traversal cost must be finite and at least one.");
+    }
+    traversal_costs_[index(s)] = cost;
+}
+
 std::vector<Coord> Grid::neighbors(const Coord& s) const {
     std::vector<Coord> all_neighbors;
 
@@ -118,11 +128,8 @@ double Grid::traversalCost(const Coord& s) const {
 
     if (state(s) == 1) {
         return std::numeric_limits<double>::infinity();
-    } else if(state(s)==-1){
-        return 1.0;
-    } else {
-        return 1.0;
     }
+    return traversal_costs_[index(s)];
 }
 
 void Grid::print(
