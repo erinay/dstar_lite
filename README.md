@@ -10,6 +10,79 @@ a 2D grid for D* Lite:
 2. The **PX4 `ObstacleDistance` path** consumes the sectorized distance message
    emitted by PX4 and reconstructs the map from PX4 odometry.
 
+## Gazebo 3D LiDAR to RViz
+
+`gazebo_pointcloud_bridge.launch.py` converts a Gazebo
+`gz.msgs.PointCloudPacked` 3D LiDAR topic directly into a ROS
+`sensor_msgs/msg/PointCloud2` stream. It is a one-way bridge, so the simulator
+remains the sole producer of sensor data.
+
+With Gazebo running, find the LiDAR's Gazebo topic and verify its type:
+
+```bash
+gz topic -l | rg -i 'points|point_cloud|lidar'
+gz topic -i -t <gazebo-point-cloud-topic>
+```
+
+The second command must report `gz.msgs.PointCloudPacked`. Then run:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/drone_ws/install/setup.bash
+ros2 launch dstar_lite gazebo_pointcloud_bridge.launch.py \
+  gz_topic:=<gazebo-point-cloud-topic>
+```
+
+The cloud is published as `/sim_lidar/points`. In RViz, set **Fixed Frame** to
+the cloud's `header.frame_id` (or to a frame connected to it by TF), add a
+**PointCloud2** display, and select `/sim_lidar/points`. Use another output
+topic if needed with `ros_topic:=/my_lidar/points`.
+
+### X500 3D LiDAR OctoMap launch
+
+For the workspace's `x500_lidar_3d` model in `maze_2d`, use the complete 3D
+mapping pipeline instead of the bridge-only launch:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/drone_ws
+colcon build --packages-select dstar_lite --symlink-install
+source install/setup.bash
+ros2 launch dstar_lite px4_raw_lidar_3d_octomap.launch.py
+```
+
+It bridges this model's raw Gazebo `scan/points` topic, publishes the exact
+Gazebo pose transform `map -> link`, and inserts the registered cloud into a
+persistent OctoMap. The outputs are:
+
+- `/sim_lidar/points` — raw sensor-frame `PointCloud2`.
+- `/mapping_scan` — filtered, world-frame points inserted into the map.
+- `/octomap_binary` — 3D binary OctoMap.
+- `/voxel_slice` — planner-friendly 2D projection.
+- `/belief_map`, `/path`, and `/waypoint` — D* Lite's map, path, and next
+  waypoint, planned from `/sim_lidar/pose` to `(12.5, -2.75)` in `map`.
+
+Open the supplied RViz configuration with
+`rviz2 -d $(ros2 pkg prefix dstar_lite)/share/dstar_lite/rviz/dstar_maze.rviz`;
+its fixed frame is `map` and it already displays `/mapping_scan` and `/voxel_slice`.
+The 3D mapper keeps every fourth point by default, which is appropriate for
+the 720×32, 30 Hz simulated LiDAR. Tune `point_stride` in the launch file if
+you need a denser map or lower CPU use.
+
+The raw `/sim_lidar/points` stream includes the X500's own propeller returns,
+as a physical LiDAR would. The mapper excludes their measured `link`-frame
+box before publishing `/mapping_scan` or inserting the OctoMap, so use
+`/mapping_scan` in RViz to inspect the filtered cloud. The box can be disabled
+or adjusted through the `self_filter_*` parameters in the 3D launch file.
+
+For the 3D pipeline, prefer the dedicated configuration. It has no `/belief_map`
+display, which belongs to the optional D* Lite planner and otherwise reports
+"No map received" when the planner is not running:
+
+```bash
+rviz2 -d $(ros2 pkg prefix dstar_lite)/share/dstar_lite/rviz/x500_lidar_3d_octomap.rviz
+```
+
 Both mappers publish `/octomap_binary`, `/voxel_slice`, `/mapping_pose`, and
 `/mapping_scan`; run only one mapper at a time.
 

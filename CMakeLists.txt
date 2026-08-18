@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.16)
 
 project(dstar_lite)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -20,16 +24,24 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(octomap REQUIRED)
 find_package(octomap_msgs REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common filters io)
 find_package(gz-transport13 REQUIRED)
 find_package(gz-msgs10 REQUIRED)
 
-# ---------------------------------------------------------------------------
-# Compiler configuration
-# ---------------------------------------------------------------------------
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+# Bonxai is checked out beside this package for host builds and copied to
+# /opt/Bonxai by the full-stack Dockerfile.  Its core and probabilistic-map
+# libraries are upstream CMake targets, not released ROS packages.
+set(BONXAI_SOURCE_DIR "" CACHE PATH "Path to the Bonxai source checkout")
+if(NOT BONXAI_SOURCE_DIR)
+    set(BONXAI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Bonxai")
+endif()
+if(NOT EXISTS "${BONXAI_SOURCE_DIR}/bonxai_core/CMakeLists.txt" OR
+   NOT EXISTS "${BONXAI_SOURCE_DIR}/bonxai_map/CMakeLists.txt")
+    message(FATAL_ERROR
+        "Bonxai source is required. Set BONXAI_SOURCE_DIR to its checkout.")
+endif()
+add_subdirectory("${BONXAI_SOURCE_DIR}/bonxai_core" "${CMAKE_CURRENT_BINARY_DIR}/bonxai_core")
+add_subdirectory("${BONXAI_SOURCE_DIR}/bonxai_map" "${CMAKE_CURRENT_BINARY_DIR}/bonxai_map")
 
 # ---------------------------------------------------------------------------
 # Core path-planning library
@@ -147,6 +159,30 @@ target_compile_options(laser_scan_octomap_node
         -Wpedantic
 )
 
+add_executable(pointcloud_bonxai_node
+    src/pointcloud_bonxai.cpp
+)
+
+target_link_libraries(pointcloud_bonxai_node
+    bonxai_map
+    Eigen3::Eigen
+)
+
+ament_target_dependencies(pointcloud_bonxai_node
+    rclcpp
+    geometry_msgs
+    sensor_msgs
+    tf2
+    tf2_ros
+)
+
+target_compile_options(pointcloud_bonxai_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 add_executable(px4_lidar_tf_broadcaster_node
     src/px4_lidar_tf_broadcaster.cpp
 )
@@ -192,50 +228,84 @@ target_compile_options(gazebo_lidar_tf_broadcaster_node
         -Wpedantic
 )
 
-add_executable(turtlebot_dstar_lite_node
-    src/turtlebot_dstar_lite_ros.cpp
+# A one-way Gazebo Harmonic PointCloudPacked -> ROS PointCloud2 bridge.  Keep
+# it in-tree instead of depending on ros_gz_bridge, whose Gazebo ABI must
+# match PX4's Harmonic install exactly.
+add_executable(gazebo_pointcloud_bridge_node
+    src/gazebo_pointcloud_bridge.cpp
 )
 
-target_link_libraries(turtlebot_dstar_lite_node
-    path_planning
+target_link_libraries(gazebo_pointcloud_bridge_node
+    gz-transport13::core
+    gz-msgs10::core
 )
 
-ament_target_dependencies(turtlebot_dstar_lite_node
+ament_target_dependencies(gazebo_pointcloud_bridge_node
     rclcpp
-    nav_msgs
     sensor_msgs
-    std_msgs
-    geometry_msgs
-    tf2
-    tf2_geometry_msgs
 )
 
-target_compile_options(turtlebot_dstar_lite_node
+target_compile_options(gazebo_pointcloud_bridge_node
     PRIVATE
         -Wall
         -Wextra
         -Wpedantic
 )
 
-add_executable(turtlebot_waypoint_controller
-    src/turtlebot_waypoint_controller.cpp
-)
+# These source files are optional in this checkout.  Keep the targets
+# available when they are present, but do not make the rest of the package
+# (including the Gazebo bridge launches) unbuildable when they are absent.
+set(optional_turtlebot_targets)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/turtlebot_dstar_lite_ros.cpp")
+    add_executable(turtlebot_dstar_lite_node
+        src/turtlebot_dstar_lite_ros.cpp
+    )
 
-ament_target_dependencies(turtlebot_waypoint_controller
-    rclcpp
-    nav_msgs
-    sensor_msgs
-    geometry_msgs
-    tf2
-    tf2_geometry_msgs
-)
+    target_link_libraries(turtlebot_dstar_lite_node
+        path_planning
+    )
 
-target_compile_options(turtlebot_waypoint_controller
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+    ament_target_dependencies(turtlebot_dstar_lite_node
+        rclcpp
+        nav_msgs
+        sensor_msgs
+        std_msgs
+        geometry_msgs
+        tf2
+        tf2_geometry_msgs
+    )
+
+    target_compile_options(turtlebot_dstar_lite_node
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+    list(APPEND optional_turtlebot_targets turtlebot_dstar_lite_node)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/turtlebot_waypoint_controller.cpp")
+    add_executable(turtlebot_waypoint_controller
+        src/turtlebot_waypoint_controller.cpp
+    )
+
+    ament_target_dependencies(turtlebot_waypoint_controller
+        rclcpp
+        nav_msgs
+        sensor_msgs
+        geometry_msgs
+        tf2
+        tf2_geometry_msgs
+    )
+
+    target_compile_options(turtlebot_waypoint_controller
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+    list(APPEND optional_turtlebot_targets turtlebot_waypoint_controller)
+endif()
 
 # ---------------------------------------------------------------------------
 # Test executables
@@ -338,10 +408,11 @@ install(
         dstar_lite_node
         obstacle_distance_octomap_node
         laser_scan_octomap_node
+        pointcloud_bonxai_node
         px4_lidar_tf_broadcaster_node
         gazebo_lidar_tf_broadcaster_node
-        turtlebot_dstar_lite_node
-        turtlebot_waypoint_controller
+        gazebo_pointcloud_bridge_node
+        ${optional_turtlebot_targets}
 
     EXPORT export_path_planning
 
@@ -355,6 +426,11 @@ install(
 install(
     DIRECTORY launch/
     DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(
+    DIRECTORY rviz/
+    DESTINATION share/${PROJECT_NAME}/rviz
 )
 
 ament_export_targets(

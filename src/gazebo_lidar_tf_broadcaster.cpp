@@ -29,6 +29,13 @@ public:
         sensor_offset_flu_.x() = declare_parameter<double>("sensor_offset_x", 0.0);
         sensor_offset_flu_.y() = declare_parameter<double>("sensor_offset_y", 0.0);
         sensor_offset_flu_.z() = declare_parameter<double>("sensor_offset_z", 0.315);
+        const double sensor_roll = declare_parameter<double>("sensor_roll", 0.0);
+        const double sensor_pitch = declare_parameter<double>("sensor_pitch", 0.0);
+        const double sensor_yaw = declare_parameter<double>("sensor_yaw", 0.0);
+        sensor_mount_orientation_ =
+            Eigen::AngleAxisd(sensor_yaw, Eigen::Vector3d::UnitZ()) *
+            Eigen::AngleAxisd(sensor_pitch, Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(sensor_roll, Eigen::Vector3d::UnitX());
 
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         pose_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>("/sim_lidar/pose", 10);
@@ -37,8 +44,9 @@ public:
         }
 
         RCLCPP_INFO(
-            get_logger(), "Publishing %s -> %s from %s for %s",
-            map_frame_.c_str(), sensor_frame_.c_str(), pose_topic_.c_str(), model_name_.c_str());
+            get_logger(), "Publishing %s -> %s from %s for %s (sensor RPY %.3f %.3f %.3f rad)",
+            map_frame_.c_str(), sensor_frame_.c_str(), pose_topic_.c_str(), model_name_.c_str(),
+            sensor_roll, sensor_pitch, sensor_yaw);
     }
 
 private:
@@ -61,6 +69,8 @@ private:
                 model_pose.position().x(), model_pose.position().y(), model_pose.position().z()};
             const Eigen::Vector3d sensor_position =
                 model_position + orientation.toRotationMatrix() * sensor_offset_flu_;
+            const Eigen::Quaterniond sensor_orientation =
+                orientation * sensor_mount_orientation_;
             geometry_msgs::msg::TransformStamped transform;
             // The raw LaserScan is stamped by Gazebo simulation time.  TF
             // must use this same timestamp; stamping it with ROS wall time
@@ -76,10 +86,10 @@ private:
             transform.transform.translation.x = sensor_position.x();
             transform.transform.translation.y = sensor_position.y();
             transform.transform.translation.z = sensor_position.z();
-            transform.transform.rotation.w = orientation.w();
-            transform.transform.rotation.x = orientation.x();
-            transform.transform.rotation.y = orientation.y();
-            transform.transform.rotation.z = orientation.z();
+            transform.transform.rotation.w = sensor_orientation.w();
+            transform.transform.rotation.x = sensor_orientation.x();
+            transform.transform.rotation.y = sensor_orientation.y();
+            transform.transform.rotation.z = sensor_orientation.z();
             tf_broadcaster_->sendTransform(transform);
 
             geometry_msgs::msg::PoseStamped pose;
@@ -97,6 +107,7 @@ private:
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_publisher_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     Eigen::Vector3d sensor_offset_flu_ = Eigen::Vector3d::Zero();
+    Eigen::Quaterniond sensor_mount_orientation_ = Eigen::Quaterniond::Identity();
     std::string map_frame_;
     std::string sensor_frame_;
     std::string model_name_;
