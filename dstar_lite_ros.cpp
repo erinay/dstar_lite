@@ -591,6 +591,114 @@ class DStarLiteNode: public rclcpp::Node{
 
         return tf2::toMsg( quaternion);
     }
+    
+    // Instead of publishing waypoint, prune to smaller segments. Then send waypoints differently
+    std::vector<Coord> prune(const std::vector<Coord>& path){
+        if(path.empty()){
+            return{};
+        }
+
+        // First, collapse colinear runs
+        if(path.size()<2){
+            return path; //nothing to remove
+        }
+        std::vector<Coord> cleaned_path;
+        cleaned_path.reserve(path.size()); // path is at most the current size of  the path
+        cleaned_path.push_back(path.front());
+        
+        int dx_before = 0;
+        int dy_before = 0;
+        bool is_turn = false;
+
+        for(std::size_t i=1; i<path.size(); i++){
+            int dx = path[i].x - path[i-1].x;
+            int dy = path[i].y - path[i-1].y;
+            
+            if(i != 1) {
+                is_turn = dx_before!=dx || dy_before!=dy;
+            }
+            
+            if(is_turn){
+                cleaned_path.push_back(path[i-1]);
+            }
+            dx_before=dx;
+            dy_before=dy;
+        }
+
+        // Next, los
+        if (cleaned_path.size()<=2){
+            return cleaned_path;
+        } 
+        std::vector<Coord> pruned_path;
+        pruned_path.reserve(cleaned_path.size());
+        pruned_path.push_back(cleaned_path.front());
+        std::size_t current = 0;
+
+        while(current<cleaned_path.size()-1){
+            // at each point, try connecting to goal, and backtrack form there
+            std::size_t next = next = cleaned_path.size()-1;
+            while(next>current+1){
+                if(line_of_sight_free(cleaned_path[current], cleaned_path[next])){
+                    break;
+                }
+                next -= 1;
+            }
+            pruned_path.push_back(cleaned_path[next]);
+            current=next;
+        }
+        return pruned_path
+    }
+    bool line_of_sight_free(const Coord& from, const Coord& to ){
+        //check if diagonal path between from and to is free
+        const int dx = to.x-from.x;
+        const int dy = to.y-from.y;
+        int x = from.x;
+        int y = from.y;
+
+        // Figure out how many grid boundaries must be crossed
+        const int nx = std::abs(dx);
+        const int ny = std::abs(dy);
+
+        int sign_x;
+        if (dx>0){
+            sign_x=1;
+        }else if(dx<0){
+            sign_x=-1
+        }else{
+            sign_x=0;
+        }
+        int sign_y;
+        if (dy>0){
+            sign_y=1;
+        }else if(dy<0){
+            sign_y=-1
+        }else{
+            sign_y=0;
+        }
+
+        // Track how far we've gotteen to nx/ny
+        int ix = 0;
+        int iy = 0;
+
+        // Helper function to check if given cell is free, 
+        auto is_free = [this](const Coord& cell) {
+            if (!belief_grid_->inBounds(cell)) {
+                return false; //first check if it's even in map
+            }
+            return belief_grid_->state(cell) == 0; //only ok shortcut if free 
+        };
+
+        // Iterae thorugh path:
+        while(ix<nx || iy <ny){
+            //figures out to go horizontal (lhs) or vertical (rhs) if we don't want pure diagonal
+            const long lhs = static_cast<long>(1 + 2 * ix) * static_cast<long>(ny);
+            const long rhs = static_cast<long>(1 + 2 * iy) * static_cast<long>(nx);
+            if(lhs==rhs){
+
+            }
+        }
+
+    }    
 
     void publish_waypoint(const std::vector<Coord>& path) {
         std::size_t waypoint_index = 0;

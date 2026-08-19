@@ -32,8 +32,11 @@ public:
             throw std::runtime_error("gz_topic, ros_topic, and frame_id must not be empty");
         }
 
-        publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-            ros_topic_, rclcpp::SensorDataQoS().keep_last(2));
+        // Spark Fast-LIO requests reliable lidar data.  A reliable publisher
+        // is also compatible with the existing best-effort map consumers.
+        auto qos = rclcpp::QoS(rclcpp::KeepLast(2));
+        qos.reliable().durability_volatile();
+        publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(ros_topic_, qos);
         if (!gz_node_.Subscribe(gz_topic_, &GazeboPointcloudBridge::pointcloudCallback, this)) {
             throw std::runtime_error("Failed to subscribe to Gazebo point cloud: " + gz_topic_);
         }

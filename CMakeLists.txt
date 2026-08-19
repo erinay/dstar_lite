@@ -252,6 +252,28 @@ target_compile_options(gazebo_pointcloud_bridge_node
         -Wpedantic
 )
 
+# Gazebo Harmonic IMU -> ROS sensor_msgs/Imu bridge for simulated LIO.
+add_executable(gazebo_imu_bridge_node
+    src/gazebo_imu_bridge.cpp
+)
+
+target_link_libraries(gazebo_imu_bridge_node
+    gz-transport13::core
+    gz-msgs10::core
+)
+
+ament_target_dependencies(gazebo_imu_bridge_node
+    rclcpp
+    sensor_msgs
+)
+
+target_compile_options(gazebo_imu_bridge_node
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # These source files are optional in this checkout.  Keep the targets
 # available when they are present, but do not make the rest of the package
 # (including the Gazebo bridge launches) unbuildable when they are absent.
@@ -412,6 +434,7 @@ install(
         px4_lidar_tf_broadcaster_node
         gazebo_lidar_tf_broadcaster_node
         gazebo_pointcloud_bridge_node
+        gazebo_imu_bridge_node
         ${optional_turtlebot_targets}
 
     EXPORT export_path_planning
