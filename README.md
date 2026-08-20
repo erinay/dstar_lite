@@ -59,7 +59,7 @@ persistent OctoMap. The outputs are:
 - `/mapping_scan` — filtered, world-frame points inserted into the map.
 - `/octomap_binary` — 3D binary OctoMap.
 - `/voxel_slice` — planner-friendly 2D projection.
-- `/belief_map`, `/path`, and `/waypoint` — D* Lite's map, path, and next
+- `/belief_map`, `/dstar_path`, and `/waypoint` — D* Lite's map, path, and next
   waypoint, planned from `/sim_lidar/pose` to `(12.5, -2.75)` in `map`.
 
 Open the supplied RViz configuration with
@@ -117,7 +117,7 @@ Gazebo raw LaserScan
     -> laser_scan_octomap_node
     -> `/octomap_binary`, `/voxel_slice`, `/mapping_pose`, `/mapping_scan`
     -> dstar_lite_node (from `/voxel_slice`)
-    -> `/belief_map`, `/path`, `/waypoint`
+    -> `/belief_map`, `/dstar_path`, `/waypoint`
 
 Gazebo dynamic pose
     -> gazebo_lidar_tf_broadcaster_node
@@ -128,7 +128,7 @@ Gazebo dynamic pose
 It configures the mapper and planner with the same 20.5 m by 17.0 m,
 0.10 m-resolution map, with origin `(-6.5, -3.0)`. D* Lite runs in the `map`
 frame, takes its robot pose from `/sim_lidar/pose`, and starts with goal
-`(12.5, -2.75)`. Consequently, `/belief_map`, `/path`, `/waypoint`, and
+`(12.5, -2.75)`. Consequently, `/belief_map`, `/dstar_path`, `/waypoint`, and
 `/voxel_slice` all refer to the same world frame.
 
 #### Launch and node parameter examples
@@ -269,7 +269,7 @@ interfaces that TurtleBot3 publishes:
   angles (positive angles turn left).
 - Input: `geometry_msgs/msg/PoseStamped` on `/goal_pose`.
 - Output: `nav_msgs/msg/OccupancyGrid` on `/belief_map`.
-- Output: `nav_msgs/msg/Path` on `/path`.
+- Output: `nav_msgs/msg/Path` on `/dstar_path`.
 - Output: a look-ahead `geometry_msgs/msg/PoseStamped` on `/waypoint`.
 
 `turtlebot_waypoint_controller` is the companion controller for simulation.

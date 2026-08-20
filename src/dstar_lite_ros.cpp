@@ -68,8 +68,9 @@ class DStarLiteNode: public rclcpp::Node{
 
         // Publishers
         belief_publisher_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/belief_map", 1);
-        path_publisher_ = this->create_publisher<nav_msgs::msg::Path>("/path", 1);
-        waypoint_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/waypoint", 1);
+        // Keep the planner path distinct from Spark's mapping trajectory,
+        // which also publishes nav_msgs/Path on /path in this stack.
+        path_publisher_ = this->create_publisher<nav_msgs::msg::Path>("/dstar_path", 1);
 
         initialize();
     }
@@ -82,7 +83,6 @@ class DStarLiteNode: public rclcpp::Node{
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr voxel_slice_subscriber_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr belief_publisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_publisher_;
 
     // States
     double world_width_{0.0};
@@ -591,67 +591,140 @@ class DStarLiteNode: public rclcpp::Node{
 
         return tf2::toMsg( quaternion);
     }
-
-    void publish_waypoint(const std::vector<Coord>& path) {
-        std::size_t waypoint_index = 0;
-
+    
+    // Instead of publishing waypoint, prune to smaller segments
+    std::vector<Coord> prune(const std::vector<Coord>& path){
         if(path.empty()){
-            return;
+            return{};
         }
 
-        //If path[0] is the current start cell, command path[1].
-        if (path[0].x == start_cell_.x && path[0].y == start_cell_.y) {
-            if (path.size() == 1) {
-                RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),2000,"Goal reached");
-                return;
-            }
-            waypoint_index = 1;
+        // First, collapse colinear runs
+        if(path.size()<2){
+            return path; //nothing to remove
         }
-
+        std::vector<Coord> cleaned_path;
+        cleaned_path.reserve(path.size()); // path is at most the current size of  the path
+        cleaned_path.push_back(path.front());
+        
         int dx_before = 0;
         int dy_before = 0;
         bool is_turn = false;
 
-        // Identify waypoint either ahead of lookahead point or corner
-        double distance = 0.0;
-
         for(std::size_t i=1; i<path.size(); i++){
             int dx = path[i].x - path[i-1].x;
             int dy = path[i].y - path[i-1].y;
-            distance += std::sqrt(dx*dx+dy*dy)*map_resolution_;
             
             if(i != 1) {
                 is_turn = dx_before!=dx || dy_before!=dy;
             }
             
             if(is_turn){
-                waypoint_index=i-1;
-                break;
-            }
-            if(distance>=look_ahead){
-                waypoint_index=i;
-                break;
+                cleaned_path.push_back(path[i-1]);
             }
             dx_before=dx;
             dy_before=dy;
-            waypoint_index=i;
         }
 
-        const Coord& waypoint_cell = path[waypoint_index];
-        geometry_msgs::msg::PoseStamped waypoint_msg;
+        // Next, los
+        if (cleaned_path.size()<=2){
+            return cleaned_path;
+        } 
+        std::vector<Coord> pruned_path;
+        pruned_path.reserve(cleaned_path.size());
+        pruned_path.push_back(cleaned_path.front());
+        std::size_t current = 0;
 
-        waypoint_msg.header.stamp = now();
-        waypoint_msg.header.frame_id = planning_frame_;
-        waypoint_msg.pose.position = grid2world(waypoint_cell);
-
-        if (waypoint_index + 1 < path.size()) {
-            waypoint_msg.pose.orientation = path_orientation(waypoint_cell, path[waypoint_index + 1]);
-        } else {
-            waypoint_msg.pose.orientation.w = 1.0;
+        while(current<cleaned_path.size()-1){
+            // at each point, try connecting to goal, and backtrack form there
+            std::size_t next = cleaned_path.size()-1;
+            while(next>current+1){
+                if(line_of_sight_free(cleaned_path[current], cleaned_path[next])){
+                    break;
+                }
+                next -= 1;
+            }
+            pruned_path.push_back(cleaned_path[next]);
+            current=next;
         }
-
-        waypoint_publisher_->publish(waypoint_msg);
+        return pruned_path;
     }
+
+    bool line_of_sight_free(const Coord& from, const Coord& to ){
+        //check if diagonal path between from and to is free
+        const int dx = to.x-from.x;
+        const int dy = to.y-from.y;
+        int x = from.x;
+        int y = from.y;
+
+        // Figure out how many grid boundaries must be crossed
+        const int nx = std::abs(dx);
+        const int ny = std::abs(dy);
+
+        int sign_x;
+        if (dx>0){
+            sign_x=1;
+        }else if(dx<0){
+            sign_x=-1;
+        }else{
+            sign_x=0;
+        }
+        int sign_y;
+        if (dy>0){
+            sign_y=1;
+        }else if(dy<0){
+            sign_y=-1;
+        }else{
+            sign_y=0;
+        }
+
+        // Track how far we've gotteen to nx/ny
+        int ix = 0;
+        int iy = 0;
+
+        // Helper function to check if given cell is free, 
+        auto is_free = [this](const Coord& cell) {
+            if (!belief_grid_->inBounds(cell)) {
+                return false; //first check if it's even in map
+            }
+            return belief_grid_->state(cell) == 0; //only ok shortcut if free 
+        };
+
+        // Iterae thorugh path:
+        while(ix<nx || iy <ny){
+            //figures out to go horizontal (lhs) or vertical (rhs) if we don't want pure diagonal
+            const long lhs = static_cast<long>(1 + 2 * ix) * static_cast<long>(ny);
+            const long rhs = static_cast<long>(1 + 2 * iy) * static_cast<long>(nx);
+            if(lhs==rhs){ //Pure diagonal!, check all 3 cells it passes through
+                const Coord side_x{x + sign_x, y};
+                const Coord side_y{x, y + sign_y};
+                const Coord diagonal{x + sign_x, y + sign_y};
+
+                if(!is_free(side_x)||!is_free(side_y)||!is_free(diagonal)){
+                    return false;
+                }
+                // else, keep going toward nx,ny
+                x+=sign_x;
+                y+=sign_y;
+                ix++;
+                iy++;
+            } else if(lhs<rhs){ //move horizontally
+                x+=sign_x;
+                ix++;
+                if(!is_free(Coord{x,y})){
+                    return false;
+                }
+            } else{ // move veritcally
+                y+=sign_y;
+                iy++;
+                if(!is_free(Coord{x,y})){
+                    return false;
+                }
+            }
+
+        }
+        // If it iterates through entire path to nx,ny, return true
+        return true;
+    }    
 
     void publish_path(){
         if (!planner_) {
@@ -659,24 +732,20 @@ class DStarLiteNode: public rclcpp::Node{
         }
 
         const std::vector<Coord> path = planner_->extractPath();
+        const std::vector<Coord> pruned_path = prune(path);
+
         nav_msgs::msg::Path path_msg;
         path_msg.header.stamp = now();
         path_msg.header.frame_id = planning_frame_;
 
-        if (path.empty()) {
-            path_publisher_->publish(path_msg);
-            return;
-        }
-
-        path_msg.poses.reserve(path.size());
-        for (std::size_t i = 0; i < path.size();i++)
+        for (std::size_t i = 0; i < pruned_path.size();i++)
         {
             geometry_msgs::msg::PoseStamped pose_msg;
             pose_msg.header = path_msg.header;
-            pose_msg.pose.position = grid2world(path[i]);
+            pose_msg.pose.position = grid2world(pruned_path[i]);
 
-            if (i + 1 < path.size()) {
-                pose_msg.pose.orientation = path_orientation(path[i], path[i + 1]);
+            if (i + 1 < pruned_path.size()) {
+                pose_msg.pose.orientation = path_orientation(pruned_path[i], pruned_path[i + 1]);
             } else {
                 pose_msg.pose.orientation.w = 1.0;
             }
@@ -684,7 +753,6 @@ class DStarLiteNode: public rclcpp::Node{
         }
 
         path_publisher_->publish(path_msg);
-        publish_waypoint(path);
     }
 
     static bool costs_equal( double a, double b) {

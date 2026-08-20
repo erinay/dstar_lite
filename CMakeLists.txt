@@ -171,6 +171,7 @@ target_link_libraries(pointcloud_bonxai_node
 ament_target_dependencies(pointcloud_bonxai_node
     rclcpp
     geometry_msgs
+    nav_msgs
     sensor_msgs
     tf2
     tf2_ros
