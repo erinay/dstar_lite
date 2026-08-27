@@ -1,5 +1,57 @@
 # D* Lite ROS 2 nodes
 
+## Active full-stack LiDAR contract
+
+`scripts/fullstack_tmux_start.sh` uses the following 3-D LiDAR path. This is
+the current contract for the PX4/Gazebo/Poisson stack; older OctoMap launch
+instructions below use separate legacy topic names.
+
+```text
+Gazebo PointCloudPacked
+  -> /Drone1/lidar/raw_cloud       (unmodified, LiDAR frame; Bonxai input)
+  -> Bonxai finite/range/self mask
+  -> /Drone1/lidar/point_cloud     (fresh propeller/body-filtered scan)
+       -> Spark Fast-LIO and Poisson
+
+Bonxai persistent occupied voxels (0.10 m, odom frame)
+  -> /mapping_scan                 (RViz)
+  -> /Drone1/sdf_map/occupancy     (Poisson)
+  -> /voxel_slice                  (D* Lite's 2-D projection)
+```
+
+There is **no cropped PointCloud2** in the active path. Bonxai accepts the
+complete usable scan: non-finite points, points closer than 0.28 m or farther
+than 40 m, and points in the drone self-filter box are removed. The self box
+is tested in body axes after the configured LiDAR-to-body rotation, so it
+removes the drone/propeller returns even though the outgoing cloud remains in
+the original `Drone1/livox_frame/lidar` frame. Its active 30 degree sensor
+pitch is supplied by the tmux launcher. All surviving input fields, including
+any intensity or ring fields, are retained on `/Drone1/lidar/point_cloud`.
+
+`point_stride=4` decimates only Bonxai map insertion; Fast-LIO and Poisson see
+every accepted point in the fresh filtered scan. A 5 x 5 x 5 m observation
+cube is deliberately not active.
+
+D* Lite treats unknown cells as provisionally traversable, but it never leaves
+the configured 2-D grid. The active grid spans `x = [-14.0, 30.0)` and
+`y = [-4.0, 30.0)` m (44.0 x 34.0 m). It covers the complete maze footprint
+and at least a 1.4 m exterior perimeter, allowing the intended long exit route
+to the configured external goal `(25.0, -4.0)`. Bonxai and D* Lite use the
+same bounds and resolution.
+
+The `sdf_map/occupancy` name is historical: it is a `PointCloud2` of all
+currently occupied Bonxai voxel centers in `odom`, not a signed-distance map.
+It is equivalent in point population to `/mapping_scan` (a separate
+publication for the Poisson consumer). Bonxai's map is persistent for the run.
+The 2-D `/voxel_slice` is instead bounded to 44.0 x 34.0 m at 0.10 m
+resolution, origin `(-14.0, -4.0)` in `odom` (440 x 340 cells). Its vertical
+band is dynamic, using the exact Gazebo `odom -> Drone1/gazebo_body` TF on each
+scan. This separate frame avoids conflicting with Spark Fast-LIO's estimated
+`Drone1/base_link` TF. While body height is at or below 2.0 m it projects the
+ground/takeoff band `[0.1, 2.0] m`; above 2.0 m it projects only
+`[body_z - 0.1, body_z + 0.1] m`. This affects `/voxel_slice` only—not the
+persistent 3-D Bonxai map or the Poisson occupancy topic.
+
 ## PX4/Gazebo LiDAR mapping and D* Lite
 
 This package contains two ways to turn a 2D LiDAR stream into an OctoMap and
@@ -247,15 +299,24 @@ uses the full-resolution Gazebo scan.
   this path is useful for PX4-interface testing but not the default Gazebo
   mapping validation path.
 
-### Planner wall preference
+### Planner clearance and wall preference
 
-`dstar_lite_node` keeps walls blocked but applies a finite proximity cost to
-nearby free cells. It therefore uses a narrow passage when required while
-preferring the centre when there is room. The defaults are a `0.50` m cost
-radius and gain `4.0`; tune them without changing the launch:
+`dstar_lite_node` computes an 8-connected distance field from the observed
+occupied cells for every `/voxel_slice` update. A cell whose centre is closer
+than `hard_clearance_radius` to an obstacle becomes non-traversable. This
+closes gaps that cannot fit the vehicle; it is recomputed from each complete
+source-map snapshot, so clearance cells disappear if their observed obstacle
+disappears.
+
+The full-stack launcher uses `hard_clearance_radius=0.50 m`, matching the
+approximately `0.40 m` X500 propeller-envelope radius plus a `0.10 m` margin.
+Set it to `0.0` to disable hard clearance. A distinct finite proximity cost
+then prefers the centre of the remaining traversable corridors. Its defaults
+are `wall_cost_radius=0.50 m` and `wall_cost_gain=4.0`:
 
 ```bash
 ros2 run dstar_lite dstar_lite_node --ros-args \
+  -p hard_clearance_radius:=0.50 \
   -p wall_cost_radius:=0.50 -p wall_cost_gain:=4.0
 ```
 

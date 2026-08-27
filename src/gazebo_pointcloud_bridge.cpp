@@ -24,7 +24,7 @@ public:
             "/world/maze_2d/model/x500_lidar_3d_0/link/link/"
             "sensor/lidar_3d/scan/points");
         ros_topic_ = declare_parameter<std::string>(
-            "ros_topic", "/Drone1/lidar/point_cloud");
+            "ros_topic", "/Drone1/lidar/raw_cloud");
         frame_id_ = declare_parameter<std::string>(
             "frame_id", "Drone1/livox_frame/lidar");
 

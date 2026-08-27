@@ -22,10 +22,10 @@
 #include <string>
 #include <vector>
 
-// Inserts the raw 3D LiDAR cloud into Bonxai's probabilistic sparse voxel
-// grid. Each scan updates a moving local observation window, while Bonxai
-// retains those observations in its global map. The complete accumulated map
-// is projected into a 2D OccupancyGrid for D* Lite.
+// Filters the raw 3D LiDAR cloud for vehicle returns, publishes that fresh
+// scan, and inserts it into Bonxai's probabilistic sparse voxel grid. Bonxai
+// retains observations in its global map; the complete accumulated map is
+// projected into a 2D OccupancyGrid for D* Lite.
 class PointcloudBonxaiNode : public rclcpp::Node
 {
 public:
@@ -35,19 +35,25 @@ public:
         resolution_ = declare_parameter<double>("resolution", 0.10);
         map_frame_ = declare_parameter<std::string>("map_frame", "odom");
         cloud_topic_ = declare_parameter<std::string>(
-            "cloud_topic", "/Drone1/lidar/point_cloud");
+            "cloud_topic", "/Drone1/lidar/raw_cloud");
+        projection_body_frame_ = declare_parameter<std::string>(
+            "projection_body_frame", "Drone1/gazebo_body");
+        filtered_cloud_topic_ = declare_parameter<std::string>(
+            "filtered_cloud_topic", "/Drone1/lidar/point_cloud");
         occupancy_topic_ = declare_parameter<std::string>(
             "occupancy_topic", "/Drone1/sdf_map/occupancy");
         slice_topic_ = declare_parameter<std::string>("slice_topic", "/voxel_slice");
         mapping_scan_topic_ = declare_parameter<std::string>("mapping_scan_topic", "/mapping_scan");
-        observation_width_ = declare_parameter<double>("observation_width", 5.0);
-        observation_height_ = declare_parameter<double>("observation_height", 5.0);
         world_width_ = declare_parameter<double>("world_width", 20.5);
         world_height_ = declare_parameter<double>("world_height", 17.0);
         origin_x_ = declare_parameter<double>("origin_x", -6.5);
         origin_y_ = declare_parameter<double>("origin_y", -3.0);
         min_projection_z_ = declare_parameter<double>("min_projection_z", 0.10);
         max_projection_z_ = declare_parameter<double>("max_projection_z", 2.0);
+        airborne_projection_start_z_ = declare_parameter<double>(
+            "airborne_projection_start_z", max_projection_z_);
+        airborne_projection_half_height_ = declare_parameter<double>(
+            "airborne_projection_half_height", 0.10);
         use_latest_tf_ = declare_parameter<bool>("use_latest_tf", true);
         min_range_ = declare_parameter<double>("min_range", 0.28);
         max_range_ = declare_parameter<double>("max_range", 40.0);
@@ -67,9 +73,9 @@ public:
             Eigen::AngleAxisd(sensor_pitch, Eigen::Vector3d::UnitY()) *
             Eigen::AngleAxisd(sensor_roll, Eigen::Vector3d::UnitX());
 
-        if (resolution_ <= 0.0 || observation_width_ <= 0.0 || observation_height_ <= 0.0 ||
-            world_width_ <= 0.0 || world_height_ <= 0.0 ||
+        if (resolution_ <= 0.0 || world_width_ <= 0.0 || world_height_ <= 0.0 ||
             max_projection_z_ <= min_projection_z_ ||
+            airborne_projection_start_z_ < 0.0 || airborne_projection_half_height_ <= 0.0 ||
             min_range_ < 0.0 || max_range_ <= min_range_ || point_stride_ <= 0 ||
             self_filter_max_x_ <= self_filter_min_x_ ||
             self_filter_max_y_ <= self_filter_min_y_ ||
@@ -85,16 +91,22 @@ public:
         cloud_subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             cloud_topic_, rclcpp::SensorDataQoS().keep_last(2),
             std::bind(&PointcloudBonxaiNode::cloudCallback, this, std::placeholders::_1));
+        auto filtered_cloud_qos = rclcpp::QoS(rclcpp::KeepLast(2));
+        filtered_cloud_qos.reliable().durability_volatile();
+        filtered_cloud_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+            filtered_cloud_topic_, filtered_cloud_qos);
         occupancy_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(occupancy_topic_, 1);
         slice_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>(slice_topic_, 1);
         mapping_scan_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>(mapping_scan_topic_, 1);
 
         RCLCPP_INFO(
             get_logger(),
-            "Mapping %s into Bonxai with a %.2f x %.2f m observation window; "
+            "Filtering vehicle returns from %s into %s and mapping the complete usable scan; "
+            "projecting [%.2f, %.2f] m on ground and %s z +/- %.2f m above %.2f m; "
             "publishing the accumulated map on %s and %s",
-            cloud_topic_.c_str(), observation_width_, observation_height_, occupancy_topic_.c_str(),
-            slice_topic_.c_str());
+            cloud_topic_.c_str(), filtered_cloud_topic_.c_str(), min_projection_z_, max_projection_z_,
+            projection_body_frame_.c_str(), airborne_projection_half_height_,
+            airborne_projection_start_z_, occupancy_topic_.c_str(), slice_topic_.c_str());
     }
 
 private:
@@ -139,19 +151,43 @@ private:
             transform.transform.translation.x,
             transform.transform.translation.y,
             transform.transform.translation.z};
+        double body_z = sensor_origin.z();
+        if (!projection_body_frame_.empty()) {
+            try {
+                const geometry_msgs::msg::TransformStamped body_transform = use_latest_tf_
+                    ? tf_buffer_->lookupTransform(
+                    map_frame_, projection_body_frame_, tf2::TimePointZero,
+                    tf2::durationFromSec(0.10))
+                    : tf_buffer_->lookupTransform(
+                    map_frame_, projection_body_frame_, msg->header.stamp,
+                    tf2::durationFromSec(0.10));
+                body_z = body_transform.transform.translation.z;
+            } catch (const tf2::TransformException& error) {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(), *get_clock(), 2000,
+                    "Projection height TF %s -> %s unavailable; using LiDAR height: %s",
+                    map_frame_.c_str(), projection_body_frame_.c_str(), error.what());
+            }
+        }
+        const bool airborne = body_z > airborne_projection_start_z_;
+        const double projection_min_z = airborne
+            ? body_z - airborne_projection_half_height_
+            : min_projection_z_;
+        const double projection_max_z = airborne
+            ? body_z + airborne_projection_half_height_
+            : max_projection_z_;
 
         const std::size_t point_count =
             static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height);
         std::size_t observation_count = 0U;
+        std::vector<std::size_t> filtered_point_indices;
+        filtered_point_indices.reserve(point_count);
         sensor_msgs::PointCloud2ConstIterator<float> x_iterator(*msg, "x");
         sensor_msgs::PointCloud2ConstIterator<float> y_iterator(*msg, "y");
         sensor_msgs::PointCloud2ConstIterator<float> z_iterator(*msg, "z");
         for (std::size_t index = 0; index < point_count;
             ++index, ++x_iterator, ++y_iterator, ++z_iterator)
         {
-            if (index % static_cast<std::size_t>(point_stride_) != 0U) {
-                continue;
-            }
             const Eigen::Vector3d point_sensor{*x_iterator, *y_iterator, *z_iterator};
             const double range = point_sensor.norm();
             if (!point_sensor.allFinite() || range < min_range_ || range > max_range_ ||
@@ -160,26 +196,22 @@ private:
                 continue;
             }
             const Eigen::Vector3d point_map = sensor_origin + rotation * point_sensor;
-            const Eigen::Vector3d ray = point_map - sensor_origin;
-            const double half_width = 0.5 * observation_width_;
-            const double half_height = 0.5 * observation_height_;
-            double clipped_fraction = 1.0;
-            if (std::abs(ray.x()) > half_width) {
-                clipped_fraction = std::min(clipped_fraction, half_width / std::abs(ray.x()));
-            }
-            if (std::abs(ray.y()) > half_height) {
-                clipped_fraction = std::min(clipped_fraction, half_height / std::abs(ray.y()));
-            }
 
-            if (clipped_fraction < 1.0) {
-                // A return outside the observation square establishes free
-                // space only up to the square boundary; it is not an obstacle.
-                bonxai_map_->addMissPoint(sensor_origin + clipped_fraction * ray);
-            } else {
-                bonxai_map_->addHitPoint(point_map);
+            // This stream is a fresh LiDAR scan, not a cumulative map.  Keep
+            // the incoming PointCloud2 fields (for example intensity) so it
+            // remains suitable for both Poisson and Spark Fast-LIO.
+            filtered_point_indices.push_back(index);
+
+            // Decimation is only for Bonxai insertion; the filtered LiDAR
+            // topic above retains every accepted point from this scan.
+            if (index % static_cast<std::size_t>(point_stride_) != 0U) {
+                continue;
             }
+            bonxai_map_->addHitPoint(point_map);
             ++observation_count;
         }
+
+        publishFilteredCloud(*msg, filtered_point_indices);
 
         if (observation_count == 0U) {
             RCLCPP_WARN_THROTTLE(
@@ -189,7 +221,7 @@ private:
         }
 
         bonxai_map_->updateFreeCells(sensor_origin);
-        publishBonxaiOutputs(rclcpp::Time(msg->header.stamp));
+        publishBonxaiOutputs(rclcpp::Time(msg->header.stamp), projection_min_z, projection_max_z);
     }
 
     static bool hasFloat32Xyz(const sensor_msgs::msg::PointCloud2& cloud)
@@ -212,13 +244,37 @@ private:
             point_body.z() >= self_filter_min_z_ && point_body.z() <= self_filter_max_z_;
     }
 
+    void publishFilteredCloud(
+        const sensor_msgs::msg::PointCloud2& input,
+        const std::vector<std::size_t>& point_indices) const
+    {
+        sensor_msgs::msg::PointCloud2 filtered = input;
+        filtered.height = 1U;
+        filtered.width = static_cast<std::uint32_t>(point_indices.size());
+        filtered.row_step = filtered.width * filtered.point_step;
+        filtered.data.resize(filtered.row_step);
+        filtered.is_dense = true;
+
+        for (std::size_t output_index = 0; output_index < point_indices.size(); ++output_index) {
+            const std::size_t input_index = point_indices[output_index];
+            const std::size_t input_row = input_index / input.width;
+            const std::size_t input_column = input_index % input.width;
+            const std::size_t source_offset = input_row * input.row_step + input_column * input.point_step;
+            const std::size_t destination_offset = output_index * filtered.point_step;
+            std::copy_n(input.data.begin() + static_cast<std::ptrdiff_t>(source_offset), input.point_step,
+                        filtered.data.begin() + static_cast<std::ptrdiff_t>(destination_offset));
+        }
+        filtered_cloud_publisher_->publish(filtered);
+    }
+
     bool projectVoxelToSlice(
         const Eigen::Vector3d& voxel_origin, nav_msgs::msg::OccupancyGrid& slice,
-        const std::int8_t occupancy) const
+        const std::int8_t occupancy, const double projection_min_z,
+        const double projection_max_z) const
     {
         const Eigen::Vector3d voxel_center =
             voxel_origin + Eigen::Vector3d::Constant(0.5 * resolution_);
-        if (voxel_center.z() < min_projection_z_ || voxel_center.z() > max_projection_z_)
+        if (voxel_center.z() < projection_min_z || voxel_center.z() > projection_max_z)
         {
             return false;
         }
@@ -268,7 +324,9 @@ private:
         publisher->publish(cloud);
     }
 
-    void publishBonxaiOutputs(const rclcpp::Time& stamp)
+    void publishBonxaiOutputs(
+        const rclcpp::Time& stamp, const double projection_min_z,
+        const double projection_max_z)
     {
         std::vector<Eigen::Vector3d> occupied_voxels;
         std::vector<Bonxai::CoordT> free_voxel_coords;
@@ -303,15 +361,16 @@ private:
                 static_cast<double>(voxel_coord.x) * resolution_,
                 static_cast<double>(voxel_coord.y) * resolution_,
                 static_cast<double>(voxel_coord.z) * resolution_};
-            projectVoxelToSlice(voxel_origin, slice, 0);
+            projectVoxelToSlice(voxel_origin, slice, 0, projection_min_z, projection_max_z);
         }
         for (const Eigen::Vector3d& voxel_origin : occupied_voxels) {
-            projectVoxelToSlice(voxel_origin, slice, 100);
+            projectVoxelToSlice(voxel_origin, slice, 100, projection_min_z, projection_max_z);
         }
         slice_publisher_->publish(slice);
     }
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscription_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_cloud_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr occupancy_publisher_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr slice_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr mapping_scan_publisher_;
@@ -322,17 +381,19 @@ private:
     double resolution_ = 0.0;
     std::string map_frame_;
     std::string cloud_topic_;
+    std::string projection_body_frame_;
+    std::string filtered_cloud_topic_;
     std::string occupancy_topic_;
     std::string slice_topic_;
     std::string mapping_scan_topic_;
-    double observation_width_ = 0.0;
-    double observation_height_ = 0.0;
     double world_width_ = 0.0;
     double world_height_ = 0.0;
     double origin_x_ = 0.0;
     double origin_y_ = 0.0;
     double min_projection_z_ = 0.0;
     double max_projection_z_ = 0.0;
+    double airborne_projection_start_z_ = 0.0;
+    double airborne_projection_half_height_ = 0.0;
     bool use_latest_tf_ = true;
     double min_range_ = 0.0;
     double max_range_ = 0.0;

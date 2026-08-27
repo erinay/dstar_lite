@@ -101,6 +101,10 @@ class DStarLiteNode: public rclcpp::Node{
     // middle of a corridor.
     double wall_cost_radius_{0.50};
     double wall_cost_gain_{4.0};
+    // A hard centre-point clearance from an observed obstacle.  A cell inside
+    // this radius is marked occupied for planning, so a corridor must be wide
+    // enough for the vehicle rather than merely containing a one-cell route.
+    double hard_clearance_radius_{0.50};
 
     const float look_ahead = 3.0f;
 
@@ -140,9 +144,12 @@ class DStarLiteNode: public rclcpp::Node{
             "odometry_topic", "/fmu/out/vehicle_odometry");
         wall_cost_radius_ = declare_parameter<double>("wall_cost_radius", 0.50);
         wall_cost_gain_ = declare_parameter<double>("wall_cost_gain", 4.0);
-        if (wall_cost_radius_ < 0.0 || wall_cost_gain_ < 0.0) {
+        hard_clearance_radius_ = declare_parameter<double>("hard_clearance_radius", 0.50);
+        if (wall_cost_radius_ < 0.0 || wall_cost_gain_ < 0.0 ||
+            hard_clearance_radius_ < 0.0) {
             throw std::runtime_error(
-                "wall_cost_radius and wall_cost_gain must be non-negative");
+                "wall_cost_radius, wall_cost_gain, and hard_clearance_radius "
+                "must be non-negative");
         }
     }
 
@@ -394,10 +401,17 @@ class DStarLiteNode: public rclcpp::Node{
                     continue;
                 }
 
-                const int state = desired_states[desired_index(target_cell)];
+                const int source_state = desired_states[desired_index(target_cell)];
                 const double wall_distance_m = wall_distance[desired_index(target_cell)];
+                // Keep the source-map state separate from the planning state:
+                // the distance transform is seeded only by real observations,
+                // not by cells previously made impassable for clearance.
+                const bool lacks_clearance =
+                    source_state != 1 && hard_clearance_radius_ > 0.0 &&
+                    wall_distance_m < hard_clearance_radius_;
+                const int planning_state = lacks_clearance ? 1 : source_state;
                 double traversal_cost = 1.0;
-                if (state != 1 && wall_cost_radius_ > 0.0 &&
+                if (planning_state != 1 && wall_cost_radius_ > 0.0 &&
                     wall_distance_m < wall_cost_radius_)
                 {
                     const double normalized_distance =
@@ -407,13 +421,13 @@ class DStarLiteNode: public rclcpp::Node{
                 }
 
                 const double old_cost = belief_grid_->traversalCost(target_cell);
-                if (belief_grid_->state(target_cell) == state &&
-                    costs_equal(old_cost, state == 1
+                if (belief_grid_->state(target_cell) == planning_state &&
+                    costs_equal(old_cost, planning_state == 1
                         ? std::numeric_limits<double>::infinity() : traversal_cost)) {
                     continue;
                 }
                 state_changed = true;
-                planner_->updateCell(target_cell, state, traversal_cost);
+                planner_->updateCell(target_cell, planning_state, traversal_cost);
                 const double new_cost = belief_grid_->traversalCost(target_cell);
                 planning_cost_changed |= !costs_equal(old_cost, new_cost);
             }
