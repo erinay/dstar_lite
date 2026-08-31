@@ -316,6 +316,13 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
         //***actually, skip this for now, static map */
 
         //all directed edges with cahngded edge cost, update edge cost c(u,v), update vertex
+        // BUGFIX: also refresh `cell` itself -- its own rhs depends on ITS neighbors' g, which
+        // hasn't changed, but if `cell` was previously unreachable (g=rhs=inf, e.g. from a stale
+        // occupied classification) becoming traversable again doesn't matter to anyone until
+        // something recomputes cell's own rhs. Without this, updateVertex(neighbor) above computes
+        // each neighbor's rhs using cell's *stale* g (still inf), never improves, never queues
+        // anything, and `cell` is permanently stranded at g=rhs=inf despite being genuinely free.
+        updateVertex(cell);
         for(const Coord& neighbor: grid_.neighbors(cell)){
             updateVertex(neighbor);
         }
@@ -335,7 +342,11 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
         }
 
         // Changing the cost of entering this cell changes each edge that
-        // terminates here, so refresh its predecessors.
+        // terminates here, so refresh its predecessors...
+        // BUGFIX: ...and refresh `cell` itself too -- see identical note in updateCellState above.
+        // Without this, a cell that reverts from occupied/blocked back to free can permanently
+        // strand at g=rhs=inf even though it (and its neighbors) are genuinely traversable again.
+        updateVertex(cell);
         for (const Coord& neighbor : grid_.neighbors(cell)) {
             updateVertex(neighbor);
         }
@@ -347,6 +358,19 @@ DStarLite::DStarLite(Grid& grid, const Coord& start, const Coord& goal)
         km_ += heuristic(prev_start, new_start);
         previous_start_ = prev_start;
         start_ = new_start;
+
+        // BUGFIX: voxel_slice_callback deliberately skips updateCell/updateVertex for whichever
+        // cell equals start_cell_ (so the robot's own footprint never marks itself occupied) --
+        // but that means the cell the robot is CURRENTLY on never gets refreshed by the normal map
+        // pipeline while it holds that status. If that cell (or a neighbor it depends on) was ever
+        // left stale at g=rhs=inf, nothing was filling this gap back in: the robot could walk onto
+        // ground faster than each cell gets a clean "not-currently-start" window to self-correct,
+        // permanently chasing its own tail. Refresh the new start cell and its neighbors here, the
+        // moment the robot arrives, using the same self+neighbors pattern as updateCell/updateCellState.
+        updateVertex(start_);
+        for(const Coord& neighbor : grid_.neighbors(start_)){
+            updateVertex(neighbor);
+        }
     }
 
 

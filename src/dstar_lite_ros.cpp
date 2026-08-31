@@ -638,6 +638,11 @@ class DStarLiteNode: public rclcpp::Node{
             dx_before=dx;
             dy_before=dy;
         }
+        // BUGFIX: the loop above only ever pushes path[i-1] (turn points before the end), so
+        // path.back() -- which is always exactly the goal cell, per extractPath() -- was never
+        // included. That silently truncated every published path one segment short of the goal
+        // (and, for a path with no turns at all, left cleaned_path with only the start point).
+        cleaned_path.push_back(path.back());
 
         // Next, los
         if (cleaned_path.size()<=2){

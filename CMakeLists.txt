@@ -51,6 +51,7 @@ add_library(path_planning
     src/grid.cpp
     src/astar.cpp
     src/dstar_lite.cpp
+    src/dstar_3d.cpp
 )
 
 target_include_directories(path_planning
@@ -370,11 +371,21 @@ target_link_libraries(pipeline_test
         path_planning
 )
 
+add_executable(dstar_3d_test
+    src/dstar_3d_test.cpp
+)
+
+target_link_libraries(dstar_3d_test
+    PRIVATE
+        path_planning
+)
+
 foreach(test_target
     astar_test
     dstar_state_test
     dstar_astar_test
     pipeline_test
+    dstar_3d_test
 )
     target_compile_options(${test_target}
         PRIVATE
@@ -410,6 +421,11 @@ if(BUILD_TESTING)
         NAME pipeline_tests
         COMMAND pipeline_test
     )
+
+    add_test(
+        NAME dstar_3d_tests
+        COMMAND dstar_3d_test
+    )
 endif()
 
 # ---------------------------------------------------------------------------
@@ -428,6 +444,7 @@ install(
         dstar_state_test
         dstar_astar_test
         pipeline_test
+        dstar_3d_test
         dstar_lite_node
         obstacle_distance_octomap_node
         laser_scan_octomap_node
