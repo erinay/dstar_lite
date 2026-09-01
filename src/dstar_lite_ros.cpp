@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
+#include <geometry_msgs/msg/vector3.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <stdint.h>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -71,6 +72,12 @@ class DStarLiteNode: public rclcpp::Node{
         // Keep the planner path distinct from Spark's mapping trajectory,
         // which also publishes nav_msgs/Path on /path in this stack.
         path_publisher_ = this->create_publisher<nav_msgs::msg::Path>("/dstar_path", 1);
+        // The goal is fixed at startup (goal_x_/goal_y_ params) and never moves, so a subscriber
+        // spinning up after this constructor still needs it -- transient_local durability makes
+        // the single publish below available to a late-joining subscriber (e.g. control_node).
+        rclcpp::QoS goal_qos(1);
+        goal_qos.transient_local();
+        goal_publisher_ = this->create_publisher<geometry_msgs::msg::Vector3>("/goal", goal_qos);
 
         initialize();
     }
@@ -83,6 +90,7 @@ class DStarLiteNode: public rclcpp::Node{
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr voxel_slice_subscriber_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr belief_publisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3>::SharedPtr goal_publisher_;
 
     // States
     double world_width_{0.0};
@@ -167,6 +175,16 @@ class DStarLiteNode: public rclcpp::Node{
 
         planner_ = std::make_unique<DStarLite>(*belief_grid_, start_cell_, goal_cell_);
         planner_->computeShortestPath();
+        publish_goal();
+    }
+
+    void publish_goal(){
+        geometry_msgs::msg::Vector3 goal_msg;
+        goal_msg.x = goal_x_;
+        goal_msg.y = goal_y_;
+        // Planning is 2D; z is unused by this node and left at 0 for now.
+        goal_msg.z = 0.0;
+        goal_publisher_->publish(goal_msg);
     }
 
     bool world2grid(double world_x, double world_y, Coord& cell) const

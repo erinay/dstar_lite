@@ -36,7 +36,7 @@ D* Lite treats unknown cells as provisionally traversable, but it never leaves
 the configured 2-D grid. The active grid spans `x = [-14.0, 30.0)` and
 `y = [-4.0, 30.0)` m (44.0 x 34.0 m). It covers the complete maze footprint
 and at least a 1.4 m exterior perimeter, allowing the intended long exit route
-to the configured external goal `(25.0, -4.0)`. Bonxai and D* Lite use the
+to the reachable yellow exit cell `(25.0, 0.0)`. Bonxai and D* Lite use the
 same bounds and resolution.
 
 The `sdf_map/occupancy` name is historical: it is a `PointCloud2` of all
