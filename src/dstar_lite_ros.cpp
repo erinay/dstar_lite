@@ -480,7 +480,7 @@ class DStarLiteNode: public rclcpp::Node{
 
         std::vector<Coord> occupied_cells;
         std::vector<Eigen::Vector3d> free_ray_endpoints;
-        // Raw ObstacleDistance is not part of the OctoMap launch path. Keep
+        // Raw ObstacleDistance is not part of the active mapping path. Keep
         // its legacy callback free of hard inflation as well.
         const int inflation_extent = 0;
 

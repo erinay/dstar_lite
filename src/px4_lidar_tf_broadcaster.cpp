@@ -12,7 +12,7 @@
 
 // Publishes the pose of the Gazebo lidar in standard ROS ENU / FLU frames.
 // It is deliberately separate from the mapper: the raw Gazebo LaserScan is
-// left untouched and LaserScan->OctoMap uses this TF just like real hardware.
+// left untouched, and the mapping path uses this TF just like real hardware.
 class Px4LidarTfBroadcaster : public rclcpp::Node
 {
 public:
