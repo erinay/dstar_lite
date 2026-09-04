@@ -23,8 +23,17 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters io)
-find_package(gz-transport13 REQUIRED)
-find_package(gz-msgs10 REQUIRED)
+
+# Gazebo bridge nodes are simulation-only -- there is no sim (and no Gazebo
+# install) on hardware targets such as the Jetson.  Build them by default,
+# but allow disabling with -DBUILD_GAZEBO_BRIDGES=OFF.
+option(BUILD_GAZEBO_BRIDGES
+  "Build the Gazebo bridge nodes (simulation only)" ON)
+
+if(BUILD_GAZEBO_BRIDGES)
+  find_package(gz-transport13 REQUIRED)
+  find_package(gz-msgs10 REQUIRED)
+endif()
 
 # Bonxai is checked out beside this package for host builds and copied to
 # /opt/Bonxai by the full-stack Dockerfile.  Its core and probabilistic-map
@@ -144,74 +153,83 @@ target_compile_options(px4_lidar_tf_broadcaster_node
         -Wpedantic
 )
 
-add_executable(gazebo_lidar_tf_broadcaster_node
-    src/gazebo_lidar_tf_broadcaster.cpp
-)
+set(optional_gazebo_targets)
+if(BUILD_GAZEBO_BRIDGES)
+  add_executable(gazebo_lidar_tf_broadcaster_node
+      src/gazebo_lidar_tf_broadcaster.cpp
+  )
 
-target_link_libraries(gazebo_lidar_tf_broadcaster_node
-    Eigen3::Eigen
-    gz-transport13::core
-    gz-msgs10::core
-)
+  target_link_libraries(gazebo_lidar_tf_broadcaster_node
+      Eigen3::Eigen
+      gz-transport13::core
+      gz-msgs10::core
+  )
 
-ament_target_dependencies(gazebo_lidar_tf_broadcaster_node
-    rclcpp
-    geometry_msgs
-    tf2_ros
-)
+  ament_target_dependencies(gazebo_lidar_tf_broadcaster_node
+      rclcpp
+      geometry_msgs
+      tf2_ros
+  )
 
-target_compile_options(gazebo_lidar_tf_broadcaster_node
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+  target_compile_options(gazebo_lidar_tf_broadcaster_node
+      PRIVATE
+          -Wall
+          -Wextra
+          -Wpedantic
+  )
 
-# A one-way Gazebo Harmonic PointCloudPacked -> ROS PointCloud2 bridge.  Keep
-# it in-tree instead of depending on ros_gz_bridge, whose Gazebo ABI must
-# match PX4's Harmonic install exactly.
-add_executable(gazebo_pointcloud_bridge_node
-    src/gazebo_pointcloud_bridge.cpp
-)
+  # A one-way Gazebo Harmonic PointCloudPacked -> ROS PointCloud2 bridge.  Keep
+  # it in-tree instead of depending on ros_gz_bridge, whose Gazebo ABI must
+  # match PX4's Harmonic install exactly.
+  add_executable(gazebo_pointcloud_bridge_node
+      src/gazebo_pointcloud_bridge.cpp
+  )
 
-target_link_libraries(gazebo_pointcloud_bridge_node
-    gz-transport13::core
-    gz-msgs10::core
-)
+  target_link_libraries(gazebo_pointcloud_bridge_node
+      gz-transport13::core
+      gz-msgs10::core
+  )
 
-ament_target_dependencies(gazebo_pointcloud_bridge_node
-    rclcpp
-    sensor_msgs
-)
+  ament_target_dependencies(gazebo_pointcloud_bridge_node
+      rclcpp
+      sensor_msgs
+  )
 
-target_compile_options(gazebo_pointcloud_bridge_node
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+  target_compile_options(gazebo_pointcloud_bridge_node
+      PRIVATE
+          -Wall
+          -Wextra
+          -Wpedantic
+  )
 
-# Gazebo Harmonic IMU -> ROS sensor_msgs/Imu bridge for simulated LIO.
-add_executable(gazebo_imu_bridge_node
-    src/gazebo_imu_bridge.cpp
-)
+  # Gazebo Harmonic IMU -> ROS sensor_msgs/Imu bridge for simulated LIO.
+  add_executable(gazebo_imu_bridge_node
+      src/gazebo_imu_bridge.cpp
+  )
 
-target_link_libraries(gazebo_imu_bridge_node
-    gz-transport13::core
-    gz-msgs10::core
-)
+  target_link_libraries(gazebo_imu_bridge_node
+      gz-transport13::core
+      gz-msgs10::core
+  )
 
-ament_target_dependencies(gazebo_imu_bridge_node
-    rclcpp
-    sensor_msgs
-)
+  ament_target_dependencies(gazebo_imu_bridge_node
+      rclcpp
+      sensor_msgs
+  )
 
-target_compile_options(gazebo_imu_bridge_node
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+  target_compile_options(gazebo_imu_bridge_node
+      PRIVATE
+          -Wall
+          -Wextra
+          -Wpedantic
+  )
+
+  list(APPEND optional_gazebo_targets
+      gazebo_lidar_tf_broadcaster_node
+      gazebo_pointcloud_bridge_node
+      gazebo_imu_bridge_node
+  )
+endif()
 
 # These source files are optional in this checkout.  Keep the targets
 # available when they are present, but do not make the rest of the package
@@ -385,9 +403,7 @@ install(
         dstar_lite_node
         pointcloud_bonxai_node
         px4_lidar_tf_broadcaster_node
-        gazebo_lidar_tf_broadcaster_node
-        gazebo_pointcloud_bridge_node
-        gazebo_imu_bridge_node
+        ${optional_gazebo_targets}
         ${optional_turtlebot_targets}
 
     EXPORT export_path_planning
