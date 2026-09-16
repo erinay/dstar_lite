@@ -35,9 +35,6 @@ if(BUILD_GAZEBO_BRIDGES)
   find_package(gz-msgs10 REQUIRED)
 endif()
 
-# Bonxai is checked out beside this package for host builds and copied to
-# /opt/Bonxai by the full-stack Dockerfile.  Its core and probabilistic-map
-# libraries are upstream CMake targets, not released ROS packages.
 set(BONXAI_SOURCE_DIR "" CACHE PATH "Path to the Bonxai source checkout")
 if(NOT BONXAI_SOURCE_DIR)
     set(BONXAI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../Bonxai")

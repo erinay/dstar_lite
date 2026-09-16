@@ -104,15 +104,9 @@ class DStarLiteNode: public rclcpp::Node{
     double goal_y_{0.0};
     int map_width_{0};
     int map_height_{0};
-    // A finite, distance-based penalty near a wall. Unlike hard obstacle
-    // inflation, this keeps narrow passages traversable while preferring the
-    // middle of a corridor.
-    double wall_cost_radius_{0.50};
+    double wall_cost_radius_{0.50}; // penalty near wall, soft constraint
     double wall_cost_gain_{4.0};
-    // A hard centre-point clearance from an observed obstacle.  A cell inside
-    // this radius is marked occupied for planning, so a corridor must be wide
-    // enough for the vehicle rather than merely containing a one-cell route.
-    double hard_clearance_radius_{0.50};
+    double hard_clearance_radius_{0.50}; //hard constraint for wall
 
     const float look_ahead = 3.0f;
 
