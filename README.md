@@ -51,34 +51,6 @@ ground/takeoff band `[0.1, 2.0] m`; above 2.0 m it projects only
 `[body_z - 0.1, body_z + 0.1] m`. This affects `/voxel_slice` only—not the
 persistent 3-D Bonxai map or the Poisson occupancy topic.
 
-## Gazebo 3D LiDAR to RViz
-
-`gazebo_pointcloud_bridge.launch.py` converts a Gazebo
-`gz.msgs.PointCloudPacked` 3D LiDAR topic directly into a ROS
-`sensor_msgs/msg/PointCloud2` stream. It is a one-way bridge, so the simulator
-remains the sole producer of sensor data.
-
-With Gazebo running, find the LiDAR's Gazebo topic and verify its type:
-
-```bash
-gz topic -l | rg -i 'points|point_cloud|lidar'
-gz topic -i -t <gazebo-point-cloud-topic>
-```
-
-The second command must report `gz.msgs.PointCloudPacked`. Then run:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source ~/drone_ws/install/setup.bash
-ros2 launch dstar_lite gazebo_pointcloud_bridge.launch.py \
-  gz_topic:=<gazebo-point-cloud-topic>
-```
-
-The cloud is published as `/sim_lidar/points`. In RViz, set **Fixed Frame** to
-the cloud's `header.frame_id` (or to a frame connected to it by TF), add a
-**PointCloud2** display, and select `/sim_lidar/points`. Use another output
-topic if needed with `ros_topic:=/my_lidar/points`.
-
 ## LiDAR pose broadcaster nodes
 
 Two standalone nodes publish a `<map_frame> -> <sensor_frame>` TF (plus the
